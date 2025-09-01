@@ -100,6 +100,9 @@ secring.gpg
 *.der
 *.pfx
 
+# Gradle properties with sensitive information
+gradle.properties
+
 # NDK
 obj/
 
