@@ -1,0 +1,182 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlinx-serialization'
+apply plugin: 'maven-publish'
+apply plugin: 'signing'
+
+
+
+group = "ly.ulink"         // your approved groupId
+version = "1.0.0"               // semver
+
+android {
+    namespace = "ly.ulink.sdk"
+    compileSdk 35
+
+    defaultConfig {
+        minSdk 24
+        targetSdk 35
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+    
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
+}
+
+dependencies {
+    // Core Android dependencies
+    implementation 'androidx.core:core-ktx:1.10.1'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'com.google.android.material:material:1.10.0'
+    
+    // Lifecycle components
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+    implementation 'androidx.lifecycle:lifecycle-process:2.7.0'
+    
+    // Coroutines
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3'
+    
+    // Serialization
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0'
+    
+    // Testing
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'io.mockk:mockk:1.13.8'
+    testImplementation 'org.robolectric:robolectric:4.13'
+    testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3'
+    testImplementation 'androidx.test:core:1.5.0'
+    testImplementation 'androidx.test.ext:junit:1.1.5'
+    
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+    androidTestImplementation 'io.mockk:mockk-android:1.13.8'
+    androidTestImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3'
+}
+
+// Create sources JAR
+task androidSourcesJar(type: Jar) {
+    archiveClassifier.set('sources')
+    from 'src/main/java'
+    include '**/*.kt'
+    include '**/*.java'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude '**/BuildConfig.java'
+    exclude '**/R.java'
+}
+
+// Create javadoc JAR (empty since dokka is not configured)
+task androidJavadocJar(type: Jar) {
+    archiveClassifier.set('javadoc')
+    // Empty javadoc JAR to satisfy Maven Central requirements
+    // TODO: Configure dokka for proper documentation generation
+}
+
+afterEvaluate {
+    // Configure all source JAR tasks to handle duplicates
+    tasks.withType(Jar).matching { it.name.contains('SourcesJar') }.configureEach {
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        exclude '**/BuildConfig.java'
+        exclude '**/R.java'
+    }
+    
+    // Ensure proper task execution order
+    if (tasks.findByName('assembleRelease')) {
+        androidSourcesJar.dependsOn(assembleRelease)
+        androidJavadocJar.dependsOn(assembleRelease)
+    }
+    
+    // Make publishing tasks depend on JAR creation
+    tasks.withType(GenerateModuleMetadata) {
+        dependsOn(androidSourcesJar, androidJavadocJar)
+    }
+    
+    publishing {
+        publications {
+            maven(MavenPublication) {
+                from components.release
+                
+                groupId = 'ly.ulink'
+                artifactId = 'ulink-sdk'
+                version = '1.0.0'
+                
+                // Only add artifacts if they're not already included by components.release
+                artifact(androidJavadocJar)
+                
+                pom {
+                    name = 'ULink Android SDK'
+                    description = 'Android SDK for creating and managing dynamic links with ULink'
+                    url = 'https://github.com/yourusername/android-ulink-sdk'
+                    
+                    licenses {
+                        license {
+                            name = 'MIT License'
+                            url = 'https://opensource.org/licenses/MIT'
+                        }
+                    }
+                    
+                    developers {
+                        developer {
+                            id = 'ulink'
+                            name = 'ULink Team'
+                            email = 'support@ulink.ly'
+                        }
+                    }
+                    
+                    scm {
+                        connection = 'scm:git:git://github.com/yourusername/android-ulink-sdk.git'
+                        developerConnection = 'scm:git:ssh://github.com:yourusername/android-ulink-sdk.git'
+                        url = 'https://github.com/yourusername/android-ulink-sdk/tree/main'
+                    }
+                }
+            }
+        }
+        
+        repositories {
+            maven {
+                name = "OSSRH"
+                url = version.endsWith('SNAPSHOT') ? 
+                    "https://s01.oss.sonatype.org/content/repositories/snapshots/" : 
+                    "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+                credentials {
+                    username = project.findProperty("ossrhToken") ?: System.getenv("OSSRH_TOKEN")
+                    password = project.findProperty("ossrhTokenPassword") ?: System.getenv("OSSRH_TOKEN_PASSWORD")
+                }
+            }
+        }
+    }
+    
+    // Configure signing after publishing is set up
+    signing {
+        def signingKeyId = project.findProperty("signing.keyId") ?: System.getenv("SIGNING_KEY_ID")
+        def signingPassword = project.findProperty("signing.password") ?: System.getenv("SIGNING_PASSWORD")
+        def signingSecretKeyFile = project.findProperty("signing.secretKeyFile") ?: System.getenv("SIGNING_SECRET_KEY_FILE")
+        
+        if (signingKeyId && signingPassword && signingSecretKeyFile) {
+            def secretKeyFile = file(signingSecretKeyFile)
+            if (secretKeyFile.exists()) {
+                useInMemoryPgpKeys(signingKeyId, secretKeyFile.text, signingPassword)
+                sign publishing.publications.maven
+            }
+        }
+    }
+}

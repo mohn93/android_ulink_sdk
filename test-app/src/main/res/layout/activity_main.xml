@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res/auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    tools:context=".MainActivity">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="ULink SDK Test App"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="24dp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- Link Creation Section -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Link Creation"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_create_dynamic_link"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Create Dynamic Link"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_create_unified_link"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Create Unified Link"
+                android:layout_marginBottom="16dp" />
+
+            <!-- Session Management Section -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Session Management"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_start_session"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Start Session"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_end_session"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="End Session"
+                android:layout_marginBottom="16dp" />
+
+            <!-- Utility Functions Section -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Utility Functions"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_get_installation_id"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Get Installation ID"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_get_last_link_data"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Get Last Link Data"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_get_initial_deeplink"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Get Initial Deep Link"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_get_session_state"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Get Session State"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_track_installation"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Track Installation"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_test_bootstrap"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Test Bootstrap Status"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_test_error_handling"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Test Error Handling"
+                android:layout_marginBottom="16dp" />
+
+            <!-- Link Resolution Section -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Link Resolution"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <EditText
+                android:id="@+id/et_link_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Enter URL to resolve"
+                android:inputType="textUri"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_resolve_link"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Resolve Link"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_process_uri"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Process ULink URI"
+                android:layout_marginBottom="16dp" />
+
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Log Section -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Log Output"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginTop="16dp"
+        android:layout_marginBottom="8dp" />
+
+    <ScrollView
+        android:id="@+id/scroll_view"
+        android:layout_width="match_parent"
+        android:layout_height="200dp"
+        android:background="@android:color/black"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/tv_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:text="" />
+    </ScrollView>
+
+</LinearLayout>
