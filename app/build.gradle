@@ -125,7 +125,7 @@ afterEvaluate {
                 pom {
                     name = 'ULink Android SDK'
                     description = 'Android SDK for creating and managing dynamic links with ULink'
-                    url = 'https://github.com/yourusername/android-ulink-sdk'
+                    url = 'https://github.com/mohn93/android_ulink_sdk'
                     
                     licenses {
                         license {
@@ -145,7 +145,7 @@ afterEvaluate {
                     scm {
                         connection = 'scm:git:git://github.com/yourusername/android-ulink-sdk.git'
                         developerConnection = 'scm:git:ssh://github.com:yourusername/android-ulink-sdk.git'
-                        url = 'https://github.com/yourusername/android-ulink-sdk/tree/main'
+                        url = 'https://github.com/mohn93/android_ulink_sdk/tree/main'
                     }
                 }
             }
@@ -153,10 +153,10 @@ afterEvaluate {
         
         repositories {
             maven {
-                name = "OSSRH"
+                name = "CentralPortal"
                 url = version.endsWith('SNAPSHOT') ? 
-                    "https://s01.oss.sonatype.org/content/repositories/snapshots/" : 
-                    "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+                    "https://central.sonatype.com/repository/maven-snapshots/" : 
+                    "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/"
                 credentials {
                     username = project.findProperty("ossrhToken") ?: System.getenv("OSSRH_TOKEN")
                     password = project.findProperty("ossrhTokenPassword") ?: System.getenv("OSSRH_TOKEN_PASSWORD")
@@ -172,11 +172,21 @@ afterEvaluate {
         def signingSecretKeyFile = project.findProperty("signing.secretKeyFile") ?: System.getenv("SIGNING_SECRET_KEY_FILE")
         
         if (signingKeyId && signingPassword && signingSecretKeyFile) {
+            // Look for the key file in the current project directory first, then parent
             def secretKeyFile = file(signingSecretKeyFile)
+            if (!secretKeyFile.exists()) {
+                secretKeyFile = file("../${signingSecretKeyFile}")
+            }
+            
             if (secretKeyFile.exists()) {
+                println "Using signing key file: ${secretKeyFile.absolutePath}"
                 useInMemoryPgpKeys(signingKeyId, secretKeyFile.text, signingPassword)
                 sign publishing.publications.maven
+            } else {
+                println "Warning: Signing secret key file not found: ${signingSecretKeyFile}"
             }
+        } else {
+            println "Warning: Missing signing configuration - keyId: ${signingKeyId}, password: ${signingPassword ? 'set' : 'not set'}, keyFile: ${signingSecretKeyFile}"
         }
     }
 }
