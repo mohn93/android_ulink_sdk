@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -64,6 +65,7 @@ class HttpClient(
                         is String -> put(key, value)
                         is Number -> put(key, value.toString())
                         is Boolean -> put(key, value)
+                        is JsonElement -> put(key, value)
                         is Map<*, *> -> {
                             put(key, buildJsonObject {
                                 @Suppress("UNCHECKED_CAST")

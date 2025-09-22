@@ -10,6 +10,8 @@ import android.os.Build
 import android.provider.Settings
 import android.telephony.TelephonyManager
 import java.util.*
+import java.security.MessageDigest
+import android.webkit.WebSettings
 
 /**
  * Utility class for collecting device information
@@ -113,11 +115,22 @@ object DeviceInfoUtils {
     }
     
     /**
-     * Gets the device ID (Android ID)
+     * Gets the device ID using multiple fallback methods
+     * Similar to Flutter's flutter_udid package approach
      */
     fun getDeviceId(context: Context): String? {
         return try {
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+            // Primary method: Android ID
+            val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+            if (!androidId.isNullOrEmpty() && androidId != "9774d56d682e549c") {
+                return androidId
+            }
+            
+            // Fallback: Generate a unique ID based on device characteristics
+            val deviceInfo = "${Build.MANUFACTURER}-${Build.MODEL}-${Build.DEVICE}-${Build.BRAND}"
+            val digest = MessageDigest.getInstance("SHA-256")
+            val hash = digest.digest(deviceInfo.toByteArray())
+            hash.joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
             null
         }
@@ -219,5 +232,109 @@ object DeviceInfoUtils {
         } catch (e: Exception) {
             null
         }
+    }
+    
+    /**
+     * Gets the device brand
+     */
+    fun getBrand(): String {
+        return Build.BRAND
+    }
+    
+    /**
+     * Gets the device name/codename
+     */
+    fun getDevice(): String {
+        return Build.DEVICE
+    }
+    
+    /**
+     * Gets the Android SDK version
+     */
+    fun getSdkVersion(): String {
+        return Build.VERSION.SDK_INT.toString()
+    }
+    
+    /**
+     * Checks if this is a physical device (not an emulator)
+     */
+    fun isPhysicalDevice(): Boolean {
+        return !(Build.FINGERPRINT.startsWith("generic") ||
+                Build.FINGERPRINT.startsWith("unknown") ||
+                Build.MODEL.contains("google_sdk") ||
+                Build.MODEL.contains("Emulator") ||
+                Build.MODEL.contains("Android SDK built for x86") ||
+                Build.MANUFACTURER.contains("Genymotion") ||
+                Build.BRAND.startsWith("generic") && Build.DEVICE.startsWith("generic") ||
+                "google_sdk" == Build.PRODUCT)
+    }
+    
+    /**
+     * Gets user agent string (for web compatibility)
+     */
+    fun getUserAgent(context: Context): String? {
+        return try {
+            WebSettings.getDefaultUserAgent(context)
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    /**
+     * Gets platform information
+     */
+    fun getPlatform(): String {
+        return "android"
+    }
+    
+    /**
+     * Gets comprehensive device information similar to Flutter SDK
+     * Combines all available device information methods
+     */
+    fun getCompleteDeviceInfo(context: Context): Map<String, Any?> {
+        val deviceInfo = mutableMapOf<String, Any?>()
+        
+        try {
+            // Basic device information
+            deviceInfo["osName"] = getOsName()
+            deviceInfo["osVersion"] = getOsVersion()
+            deviceInfo["deviceModel"] = Build.MODEL
+            deviceInfo["deviceManufacturer"] = Build.MANUFACTURER
+            deviceInfo["brand"] = getBrand()
+            deviceInfo["device"] = getDevice()
+            deviceInfo["isPhysicalDevice"] = isPhysicalDevice()
+            deviceInfo["sdkVersion"] = getSdkVersion()
+            
+            // App information
+            deviceInfo["appVersion"] = getAppVersion(context)
+            deviceInfo["appBuild"] = getAppBuild(context)
+            
+            // Device identifiers
+            deviceInfo["deviceId"] = getDeviceId(context)
+            
+            // Locale and timezone
+            deviceInfo["language"] = getLanguage()
+            deviceInfo["timezone"] = getTimezone()
+            
+            // Network and connectivity
+            deviceInfo["networkType"] = getNetworkType(context)
+            deviceInfo["carrierName"] = getCarrierName(context)
+            deviceInfo["countryCode"] = getCountryCode(context)
+            
+            // Device state
+            deviceInfo["deviceOrientation"] = getDeviceOrientation(context)
+            deviceInfo["batteryLevel"] = getBatteryLevel(context)
+            deviceInfo["isCharging"] = isCharging(context)
+            
+            // Platform specific
+            deviceInfo["platform"] = getPlatform()
+            deviceInfo["userAgent"] = getUserAgent(context)
+            
+        } catch (e: Exception) {
+            // Add error information if collection fails
+            deviceInfo["error"] = "Failed to collect complete device info: ${e.message}"
+        }
+        
+        return deviceInfo
     }
 }

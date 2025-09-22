@@ -110,7 +110,14 @@ data class ULinkParameters(
     /**
      * Metadata map for social media data
      */
-    val metadata: JsonElement? = null
+    val metadata: JsonElement? = null,
+    
+    /**
+     * Domain host to use for the link (e.g., "example.com" or "subdomain.shared.ly")
+     * Required to ensure consistent link generation and prevent app breakage
+     * when projects have multiple domains configured.
+     */
+    val domain: String
 ) {
     companion object {
         /**
@@ -118,6 +125,7 @@ data class ULinkParameters(
          * Dynamic links are designed for in-app deep linking with parameters and smart app store redirects
          */
         fun dynamic(
+            domain: String,
             slug: String? = null,
             iosFallbackUrl: String? = null,
             androidFallbackUrl: String? = null,
@@ -156,7 +164,8 @@ data class ULinkParameters(
                             }
                         }
                     }
-                }
+                },
+                domain = domain
             )
         }
         
@@ -165,6 +174,7 @@ data class ULinkParameters(
          * Unified links are simple platform-based redirects intended for browser handling
          */
         fun unified(
+            domain: String,
             slug: String? = null,
             iosUrl: String,
             androidUrl: String,
@@ -203,7 +213,8 @@ data class ULinkParameters(
                             }
                         }
                     }
-                }
+                },
+                domain = domain
             )
         }
     }
@@ -221,6 +232,7 @@ data class ULinkParameters(
         iosFallbackUrl?.let { data["iosFallbackUrl"] = it }
         androidFallbackUrl?.let { data["androidFallbackUrl"] = it }
         fallbackUrl?.let { data["fallbackUrl"] = it }
+        data["domain"] = domain
         
         // Handle regular parameters (non-social media)
         val regularParameters = mutableMapOf<String, Any>()

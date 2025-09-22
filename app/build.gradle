@@ -189,4 +189,45 @@ afterEvaluate {
             println "Warning: Missing signing configuration - keyId: ${signingKeyId}, password: ${signingPassword ? 'set' : 'not set'}, keyFile: ${signingSecretKeyFile}"
         }
     }
+    
+    // Task to trigger manual upload to Central Portal
+    task triggerCentralPortalUpload {
+        description = 'Triggers the transfer of deployment from OSSRH Staging API to Central Portal'
+        doLast {
+            def ossrhToken = project.findProperty("ossrhToken") ?: System.getenv("OSSRH_TOKEN")
+            def ossrhTokenPassword = project.findProperty("ossrhTokenPassword") ?: System.getenv("OSSRH_TOKEN_PASSWORD")
+            
+            if (ossrhToken && ossrhTokenPassword) {
+                def credentials = "${ossrhToken}:${ossrhTokenPassword}".bytes.encodeBase64().toString()
+                def namespace = "ly.ulink" // Your namespace
+                
+                try {
+                    def url = "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/${namespace}"
+                    def connection = new URL(url).openConnection()
+                    connection.setRequestMethod("POST")
+                    connection.setRequestProperty("Authorization", "Bearer ${credentials}")
+                    connection.setRequestProperty("Content-Type", "application/json")
+                    
+                    def responseCode = connection.getResponseCode()
+                    if (responseCode == 200 || responseCode == 201 || responseCode == 204) {
+                        println "✅ Successfully triggered Central Portal upload for namespace: ${namespace}"
+                        println "📋 Check your deployment at: https://central.sonatype.com/publishing/deployments"
+                    } else {
+                        println "⚠️  Upload trigger response code: ${responseCode}"
+                        println "Response: ${connection.getInputStream().text}"
+                    }
+                } catch (Exception e) {
+                    println "❌ Failed to trigger Central Portal upload: ${e.message}"
+                    println "💡 You may need to manually trigger the upload via the Central Portal API"
+                }
+            } else {
+                println "❌ Missing OSSRH credentials for Central Portal upload trigger"
+            }
+        }
+    }
+    
+    // Make the trigger task run after publishing
+    tasks.named('publishAllPublicationsToCentralPortalRepository').configure {
+        finalizedBy triggerCentralPortalUpload
+    }
 }

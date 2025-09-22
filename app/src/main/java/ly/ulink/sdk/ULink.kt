@@ -172,6 +172,7 @@ class ULink private constructor(
         // Bootstrap installation and session with the server
         scope.launch {
             bootstrap()
+            // Note: bootstrap() already handles session creation, no need for additional startSession() call
         }
         
         // Load last link data
@@ -357,16 +358,13 @@ class ULink private constructor(
         val installationId = getInstallationId()
         val deviceInfo = mutableMapOf<String, Any>()
         
+        // Get comprehensive device information using the updated DeviceInfoUtils
+        val completeDeviceInfo = DeviceInfoUtils.getCompleteDeviceInfo(context)
+        // Filter out null values to match Map<String, Any> type
+        deviceInfo.putAll(completeDeviceInfo.filterValues { it != null } as Map<String, Any>)
+        
+        // Override installation ID if available
         installationId?.let { deviceInfo["installationId"] = it }
-        DeviceInfoUtils.getDeviceId(context)?.let { deviceInfo["deviceId"] = it }
-        deviceInfo["deviceModel"] = DeviceInfoUtils.getDeviceModel()
-        deviceInfo["deviceManufacturer"] = android.os.Build.MANUFACTURER
-        deviceInfo["osName"] = DeviceInfoUtils.getOsName()
-        deviceInfo["osVersion"] = DeviceInfoUtils.getOsVersion()
-        DeviceInfoUtils.getAppVersion(context)?.let { deviceInfo["appVersion"] = it }
-        DeviceInfoUtils.getAppBuild(context)?.let { deviceInfo["appBuild"] = it }
-        deviceInfo["language"] = DeviceInfoUtils.getLanguage()
-        deviceInfo["timezone"] = DeviceInfoUtils.getTimezone()
         
         // Add metadata with client information
         deviceInfo["metadata"] = mapOf(
@@ -405,17 +403,28 @@ class ULink private constructor(
                                                     is String -> put(k2, v2)
                                                     is Number -> put(k2, v2)
                                                     is Boolean -> put(k2, v2)
-                                                    else -> put(k2, v2.toString())
+                                                    is Map<*, *> -> {
+                                                        put(k, buildJsonObject {
+                                                            @Suppress("UNCHECKED_CAST")
+                                                            (v2 as Map<String, Any>).forEach { (k3, v3) ->
+                                                                when (v3) {
+                                                                    is String -> put(k3, v3)
+                                                                    is Number -> put(k3, v3)
+                                                                    is Boolean -> put(k2, v3)
+                                                                }
+                                                            }
+                                                        })
+                                                    }
                                                 }
                                             }
                                         })
                                     }
-                                    else -> put(k, v.toString())
+                                    // Remove else clause to ensure proper JSON object handling
                                 }
                             }
                         })
                     }
-                    else -> put(key, value.toString())
+                    // Remove else clause to ensure proper JSON object handling
                 }
             }
         }.toString()
@@ -715,46 +724,91 @@ class ULink private constructor(
                 
                 val installationId = getInstallationId() ?: return@withContext ULinkSessionResponse.error("No installation ID")
                 
-                // Collect device information
-                val deviceInfo = mutableMapOf<String, Any>()
-                deviceInfo["deviceModel"] = DeviceInfoUtils.getDeviceModel()
-                deviceInfo["osName"] = DeviceInfoUtils.getOsName()
-                deviceInfo["osVersion"] = DeviceInfoUtils.getOsVersion()
-                deviceInfo["language"] = DeviceInfoUtils.getLanguage()
-                deviceInfo["timezone"] = DeviceInfoUtils.getTimezone()
+                // Collect comprehensive device information
+                val completeDeviceInfo = DeviceInfoUtils.getCompleteDeviceInfo(context)
                 
-                DeviceInfoUtils.getAppVersion(context)?.let { deviceInfo["appVersion"] = it }
-                DeviceInfoUtils.getDeviceId(context)?.let { deviceInfo["deviceId"] = it }
+                // Extract specific fields that go at the top level
+                val networkType = completeDeviceInfo["networkType"]
+                val deviceOrientation = completeDeviceInfo["deviceOrientation"]
+                val batteryLevel = completeDeviceInfo["batteryLevel"]
+                val isCharging = completeDeviceInfo["isCharging"]
+                
+                // Filter out the extracted fields from device info
+                val filteredDeviceInfo = completeDeviceInfo.filterKeys { key ->
+                    key !in setOf("networkType", "deviceOrientation", "batteryLevel", "isCharging")
+                }.filterValues { it != null }
+                
+                // Create metadata object with deviceInfo nested inside
+                val metadataMap = mutableMapOf<String, Any>()
+                metadataMap["deviceInfo"] = filteredDeviceInfo
                 
                 // Merge with provided metadata
-                metadata?.let { deviceInfo.putAll(it) }
+                metadata?.let { metadataMap.putAll(it) }
                 
-                // Convert deviceInfo map to JsonElement
+                // Convert metadata map to JsonElement
                 val metadataJsonElement = buildJsonObject {
-                    deviceInfo.forEach { (key, value) ->
+                    metadataMap.forEach { (key, value) ->
                         when (value) {
                             is String -> put(key, value)
-                            is Number -> put(key, value.toString())
+                            is Number -> put(key, value)
                             is Boolean -> put(key, value)
-                            else -> put(key, value.toString())
+                            is Map<*, *> -> {
+                                put(key, buildJsonObject {
+                                    @Suppress("UNCHECKED_CAST")
+                                    (value as Map<String, Any>).forEach { (nestedKey, nestedValue) ->
+                                        when (nestedValue) {
+                                            is String -> put(nestedKey, nestedValue)
+                                            is Number -> put(nestedKey, nestedValue)
+                                            is Boolean -> put(nestedKey, nestedValue)
+                                            is Map<*, *> -> {
+                                                put(nestedKey, buildJsonObject {
+                                                    @Suppress("UNCHECKED_CAST")
+                                                    (nestedValue as Map<String, Any>).forEach { (deepKey, deepValue) ->
+                                                        when (deepValue) {
+                                                            is String -> put(deepKey, deepValue)
+                                                            is Number -> put(deepKey, deepValue)
+                                                            is Boolean -> put(deepKey, deepValue)
+                                                        }
+                                                    }
+                                                })
+                                            }
+                                        }
+                                    }
+                                })
+                            }
+                            // Remove the else clause that was converting objects to strings
+                            // This ensures Map objects are properly handled as JSON objects
                         }
                     }
                 }
                 
                 val sessionData = ULinkSession(
                     installationId = installationId,
-                    networkType = DeviceInfoUtils.getNetworkType(context),
-                    deviceOrientation = DeviceInfoUtils.getDeviceOrientation(context),
-                    batteryLevel = DeviceInfoUtils.getBatteryLevel(context),
-                    isCharging = DeviceInfoUtils.isCharging(context),
+                    networkType = networkType as? String,
+                    deviceOrientation = deviceOrientation as? String,
+                    batteryLevel = batteryLevel as? Int,
+                    isCharging = isCharging as? Boolean,
                     metadata = metadataJsonElement
                 )
                 
                 val url = "${config.baseUrl}/sdk/sessions/start"
-                val headers = mapOf(
+                val headers = mutableMapOf(
                     "X-App-Key" to config.apiKey,
-                    "Content-Type" to "application/json"
+                    "Content-Type" to "application/json",
+                    "X-ULink-Client" to "sdk-android",
+                    "X-ULink-Client-Version" to SDK_VERSION,
+                    "X-ULink-Client-Platform" to "android"
                 )
+                
+                // Add installation ID if available
+                getInstallationId()?.let { id ->
+                    headers["X-Installation-Id"] = id
+                }
+                
+                // Add device ID if available
+                DeviceInfoUtils.getDeviceId(context)?.let { deviceId ->
+                    headers["X-Device-Id"] = deviceId
+                }
                 
                 val response = httpClient.postJson(url, sessionData.toJson(), headers)
                 
