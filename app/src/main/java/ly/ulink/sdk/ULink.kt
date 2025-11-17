@@ -45,7 +45,7 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
-        private const val SDK_VERSION = "1.0.0"
+        private const val SDK_VERSION = "1.0.1"
         
         @Volatile
         private var INSTANCE: ULink? = null
@@ -294,7 +294,7 @@ class ULink private constructor(
                     "X-App-Key" to config.apiKey,
                     "Content-Type" to "application/json",
                     "X-ULink-Client" to "sdk-android",
-                    "X-ULink-Client-Version" to "1.0.0", // TODO: Get from build config
+                    "X-ULink-Client-Version" to SDK_VERSION, // TODO: Get from build config
                     "X-ULink-Client-Platform" to "android"
                 )
                 
