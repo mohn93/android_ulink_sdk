@@ -136,8 +136,7 @@ class MainActivity : AppCompatActivity() {
         // Initialize with manual handling
         val config = ULinkConfig(
             apiKey = "your_api_key",
-            baseUrl = "https://api.ulink.ly",
-            enableDeepLinkIntegration = false // Disable automatic handling
+            // enableDeepLinkIntegration = false // Disable automatic handling
         )
         ulink = ULink.initialize(this, config)
         

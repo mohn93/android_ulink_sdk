@@ -3,6 +3,7 @@ package ly.ulink.sdk.models
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -90,7 +91,7 @@ data class ULinkResolvedData(
             val metadata = json["metadata"]
             
             // Extract social media tags from metadata
-            val socialMediaTags = metadata?.jsonObject?.let { metadataJson ->
+            val socialMediaTags = metadata?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonObject?.let { metadataJson ->
                 SocialMediaTags(
                     ogTitle = metadataJson["ogTitle"]?.jsonPrimitive?.content,
                     ogDescription = metadataJson["ogDescription"]?.jsonPrimitive?.content,

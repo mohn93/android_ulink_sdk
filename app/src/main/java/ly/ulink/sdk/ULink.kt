@@ -713,9 +713,9 @@ class ULink private constructor(
     }
     
     /**
-     * Starts a new session
+     * Starts a new session (internal use only - automatically managed by lifecycle)
      */
-    suspend fun startSession(metadata: Map<String, Any>? = null): ULinkSessionResponse {
+    private suspend fun startSession(metadata: Map<String, Any>? = null): ULinkSessionResponse {
         return withContext(Dispatchers.IO) {
             try {
                 // Set state to initializing
@@ -911,9 +911,9 @@ class ULink private constructor(
     }
     
     /**
-     * Waits for session initialization to complete
+     * Waits for session initialization to complete (internal use only)
      */
-    suspend fun waitForSessionInitialization() {
+    private suspend fun waitForSessionInitialization() {
         sessionFuture?.let { future ->
             withContext(Dispatchers.IO) {
                 try {
