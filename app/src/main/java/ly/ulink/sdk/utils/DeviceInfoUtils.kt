@@ -140,28 +140,34 @@ object DeviceInfoUtils {
      * Gets the network type
      */
     fun getNetworkType(context: Context): String {
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val network = connectivityManager.activeNetwork ?: return "Unknown"
-            val networkCapabilities = connectivityManager.getNetworkCapabilities(network) ?: return "Unknown"
+        return try {
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             
-            return when {
-                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
-                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
-                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
-                else -> "None"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val network = connectivityManager.activeNetwork ?: return "Unknown"
+                val networkCapabilities = connectivityManager.getNetworkCapabilities(network) ?: return "Unknown"
+                
+                when {
+                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
+                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
+                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+                    else -> "None"
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val networkInfo = connectivityManager.activeNetworkInfo ?: return "Unknown"
+                
+                when (networkInfo.type) {
+                    ConnectivityManager.TYPE_WIFI -> "WiFi"
+                    ConnectivityManager.TYPE_MOBILE -> "Cellular"
+                    ConnectivityManager.TYPE_ETHERNET -> "Ethernet"
+                    else -> "Unknown"
+                }
             }
-        } else {
-            @Suppress("DEPRECATION")
-            val networkInfo = connectivityManager.activeNetworkInfo ?: return "Unknown"
-            
-            return when (networkInfo.type) {
-                ConnectivityManager.TYPE_WIFI -> "WiFi"
-                ConnectivityManager.TYPE_MOBILE -> "Cellular"
-                ConnectivityManager.TYPE_ETHERNET -> "Ethernet"
-                else -> "Unknown"
-            }
+        } catch (e: SecurityException) {
+            "Unknown"
+        } catch (e: Exception) {
+            "Unknown"
         }
     }
     
@@ -184,10 +190,36 @@ object DeviceInfoUtils {
     fun getCountryCode(context: Context): String {
         return try {
             val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-            val countryCode = telephonyManager.networkCountryIso
-            if (countryCode.isNullOrEmpty()) "Unknown" else countryCode
-        } catch (e: Exception) {
+
+            val networkCountry = telephonyManager.networkCountryIso
+            if (!networkCountry.isNullOrEmpty()) {
+                return networkCountry.uppercase(Locale.ROOT)
+            }
+
+            val simCountry = telephonyManager.simCountryIso
+            if (!simCountry.isNullOrEmpty()) {
+                return simCountry.uppercase(Locale.ROOT)
+            }
+
+            val localeCountry = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                context.resources.configuration.locales.get(0).country
+            } else {
+                @Suppress("DEPRECATION")
+                context.resources.configuration.locale.country
+            }
+            if (!localeCountry.isNullOrEmpty()) {
+                return localeCountry.uppercase(Locale.ROOT)
+            }
+
+            val defaultCountry = Locale.getDefault().country
+            if (!defaultCountry.isNullOrEmpty()) {
+                return defaultCountry.uppercase(Locale.ROOT)
+            }
+
             "Unknown"
+        } catch (e: Exception) {
+            val fallback = Locale.getDefault().country
+            if (!fallback.isNullOrEmpty()) fallback.uppercase(Locale.ROOT) else "Unknown"
         }
     }
     

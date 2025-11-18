@@ -78,7 +78,7 @@ class DeviceInfoUtilsTest {
         assertEquals("1.0.0", deviceInfo["appVersion"])
         assertEquals("WiFi", deviceInfo["connectionType"])
         assertEquals("Test Carrier", deviceInfo["carrier"])
-        assertEquals("us", deviceInfo["country"])
+        assertEquals("US", deviceInfo["country"])
     }
 
     @Test
@@ -104,7 +104,7 @@ class DeviceInfoUtilsTest {
 
         assertEquals("Cellular", deviceInfo["connectionType"])
         assertEquals("Cellular Provider", deviceInfo["carrier"])
-        assertEquals("ca", deviceInfo["country"])
+        assertEquals("CA", deviceInfo["country"])
     }
 
     @Test
@@ -200,7 +200,7 @@ class DeviceInfoUtilsTest {
 
         assertEquals("Ethernet", deviceInfo["connectionType"])
         assertEquals("Unknown", deviceInfo["carrier"])
-        assertEquals("us", deviceInfo["country"])
+        assertEquals("US", deviceInfo["country"])
     }
 
     @Test

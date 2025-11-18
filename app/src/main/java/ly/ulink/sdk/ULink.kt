@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -45,7 +46,7 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
-        private const val SDK_VERSION = "1.0.1"
+        private const val SDK_VERSION = "1.0.3"
         
         @Volatile
         private var INSTANCE: ULink? = null
@@ -117,6 +118,8 @@ class ULink private constructor(
     
     // Session management
     private var currentSessionId: String? = null
+    private var bootstrapCompleted = false
+    private var pendingSessionStart = false
     
     /**
      * Current session state
@@ -171,8 +174,12 @@ class ULink private constructor(
         
         // Bootstrap installation and session with the server
         scope.launch {
-            bootstrap()
-            // Note: bootstrap() already handles session creation, no need for additional startSession() call
+            val bootstrapSuccess = bootstrap()
+            bootstrapCompleted = bootstrapSuccess
+            if (bootstrapSuccess && pendingSessionStart) {
+                pendingSessionStart = false
+                startSessionIfNeeded()
+            }
         }
         
         // Load last link data
@@ -194,10 +201,14 @@ class ULink private constructor(
             Log.d(TAG, "App started - starting session")
         }
         scope.launch {
-            // Only start session if not already active or initializing
-            if (sessionState == SessionState.IDLE || sessionState == SessionState.FAILED) {
-                startSession()
+            if (!bootstrapCompleted) {
+                pendingSessionStart = true
+                if (config.debug) {
+                    Log.d(TAG, "App started but bootstrap pending - deferring session start")
+                }
+                return@launch
             }
+            startSessionIfNeeded()
         }
     }
     
@@ -210,6 +221,9 @@ class ULink private constructor(
             Log.d(TAG, "App stopped - ending session")
         }
         scope.launch {
+            if (!bootstrapCompleted) {
+                return@launch
+            }
             // Only end session if currently active
             if (sessionState == SessionState.ACTIVE) {
                 endSession()
@@ -279,10 +293,10 @@ class ULink private constructor(
     /**
      * Bootstrap installation and session via single API call
      */
-    private suspend fun bootstrap() {
+    private suspend fun bootstrap(): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val installationId = getInstallationId() ?: return@withContext
+                val installationId = getInstallationId() ?: return@withContext false
                 
                 if (config.debug) {
                     Log.d(TAG, "Bootstrapping installation and session")
@@ -337,6 +351,8 @@ class ULink private constructor(
                         if (config.debug) {
                             Log.d(TAG, "Bootstrap completed successfully")
                         }
+                        
+                        return@withContext true
                     }
                 } else {
                     if (config.debug) {
@@ -348,6 +364,7 @@ class ULink private constructor(
                     Log.e(TAG, "Bootstrap error", e)
                 }
             }
+            return@withContext false
         }
     }
     
@@ -355,19 +372,35 @@ class ULink private constructor(
      * Build bootstrap request body
      */
     private fun buildBootstrapBodyMap(): Map<String, Any> {
-        val installationId = getInstallationId()
-        val deviceInfo = mutableMapOf<String, Any>()
+        val bootstrapData = mutableMapOf<String, Any>()
         
-        // Get comprehensive device information using the updated DeviceInfoUtils
-        val completeDeviceInfo = DeviceInfoUtils.getCompleteDeviceInfo(context)
-        // Filter out null values to match Map<String, Any> type
-        deviceInfo.putAll(completeDeviceInfo.filterValues { it != null } as Map<String, Any>)
+        // Installation identifiers
+        val currentInstallationId = getInstallationId()
+        currentInstallationId?.let { bootstrapData["installationId"] = it }
+        DeviceInfoUtils.getDeviceId(context)?.let { bootstrapData["deviceId"] = it }
         
-        // Override installation ID if available
-        installationId?.let { deviceInfo["installationId"] = it }
+        // Device details
+        bootstrapData["deviceModel"] = Build.MODEL
+        bootstrapData["deviceManufacturer"] = Build.MANUFACTURER
         
-        // Add metadata with client information
-        deviceInfo["metadata"] = mapOf(
+        // OS / App info
+        bootstrapData["osName"] = DeviceInfoUtils.getOsName()
+        bootstrapData["osVersion"] = DeviceInfoUtils.getOsVersion()
+        DeviceInfoUtils.getAppVersion(context)?.let { bootstrapData["appVersion"] = it }
+        DeviceInfoUtils.getAppBuild(context)?.let { bootstrapData["appBuild"] = it }
+        
+        // Locale information
+        bootstrapData["language"] = DeviceInfoUtils.getLanguage()
+        bootstrapData["timezone"] = DeviceInfoUtils.getTimezone()
+        
+        // Device state
+        bootstrapData["networkType"] = DeviceInfoUtils.getNetworkType(context)
+        bootstrapData["deviceOrientation"] = DeviceInfoUtils.getDeviceOrientation(context)
+        DeviceInfoUtils.getBatteryLevel(context)?.let { bootstrapData["batteryLevel"] = it }
+        DeviceInfoUtils.isCharging(context)?.let { bootstrapData["isCharging"] = it }
+        
+        // Metadata with client info (consumed by backend)
+        bootstrapData["metadata"] = mapOf(
             "client" to mapOf(
                 "type" to "sdk-android",
                 "version" to SDK_VERSION,
@@ -375,7 +408,13 @@ class ULink private constructor(
             )
         )
         
-        return deviceInfo
+        return bootstrapData
+    }
+
+    private suspend fun startSessionIfNeeded() {
+        if (sessionState == SessionState.IDLE || sessionState == SessionState.FAILED) {
+            startSession()
+        }
     }
     
     private fun buildBootstrapBody(): String {
