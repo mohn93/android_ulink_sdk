@@ -141,28 +141,28 @@ object DeviceInfoUtils {
      */
     fun getNetworkType(context: Context): String {
         return try {
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = connectivityManager.activeNetwork ?: return "Unknown"
+            val networkCapabilities = connectivityManager.getNetworkCapabilities(network) ?: return "Unknown"
             
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val network = connectivityManager.activeNetwork ?: return "Unknown"
-                val networkCapabilities = connectivityManager.getNetworkCapabilities(network) ?: return "Unknown"
-                
                 when {
-                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
-                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
-                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
-                    else -> "None"
-                }
-            } else {
-                @Suppress("DEPRECATION")
-                val networkInfo = connectivityManager.activeNetworkInfo ?: return "Unknown"
-                
+                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
+                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
+                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+                else -> "None"
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val networkInfo = connectivityManager.activeNetworkInfo ?: return "Unknown"
+            
                 when (networkInfo.type) {
-                    ConnectivityManager.TYPE_WIFI -> "WiFi"
-                    ConnectivityManager.TYPE_MOBILE -> "Cellular"
-                    ConnectivityManager.TYPE_ETHERNET -> "Ethernet"
-                    else -> "Unknown"
-                }
+                ConnectivityManager.TYPE_WIFI -> "WiFi"
+                ConnectivityManager.TYPE_MOBILE -> "Cellular"
+                ConnectivityManager.TYPE_ETHERNET -> "Ethernet"
+                else -> "Unknown"
+            }
             }
         } catch (e: SecurityException) {
             "Unknown"

@@ -46,7 +46,7 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
-        private const val SDK_VERSION = "1.0.3"
+        private const val SDK_VERSION = "1.0.4"
         
         @Volatile
         private var INSTANCE: ULink? = null
