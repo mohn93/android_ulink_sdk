@@ -22,6 +22,10 @@ import ly.ulink.sdk.network.HttpClient
 import ly.ulink.sdk.utils.DeviceInfoUtils
 import java.util.*
 import java.util.concurrent.CompletableFuture
+import com.android.installreferrer.api.InstallReferrerClient
+import com.android.installreferrer.api.InstallReferrerStateListener
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * Main class for the ULink Android SDK
@@ -46,7 +50,7 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
-        private const val SDK_VERSION = "1.0.4"
+        private const val SDK_VERSION = "1.0.5"
         
         @Volatile
         private var INSTANCE: ULink? = null
@@ -148,9 +152,87 @@ class ULink private constructor(
      */
     val onUnifiedLink: SharedFlow<ULinkResolvedData> = _unifiedLinkStream.asSharedFlow()
     
+    // Debug log stream
+    private val _logStream = MutableSharedFlow<ULinkLogEntry>(replay = 50, extraBufferCapacity = 100)
+    
+    /**
+     * Flow of SDK log entries for debugging
+     * Only emits when debug mode is enabled
+     */
+    val logStream: SharedFlow<ULinkLogEntry> = _logStream.asSharedFlow()
+    
     // Initial deep link data
     private var initialUri: Uri? = null
     private var lastLinkData: ULinkResolvedData? = null
+    
+    /**
+     * Logs a debug message to both Android Log and the log stream
+     */
+    private fun logDebug(message: String, tag: String = TAG) {
+        if (config.debug) {
+            Log.d(tag, message)
+            scope.launch {
+                _logStream.emit(ULinkLogEntry(
+                    level = ULinkLogEntry.LEVEL_DEBUG,
+                    tag = tag,
+                    message = message
+                ))
+            }
+        }
+    }
+    
+    /**
+     * Logs an info message to both Android Log and the log stream
+     */
+    private fun logInfo(message: String, tag: String = TAG) {
+        if (config.debug) {
+            Log.i(tag, message)
+            scope.launch {
+                _logStream.emit(ULinkLogEntry(
+                    level = ULinkLogEntry.LEVEL_INFO,
+                    tag = tag,
+                    message = message
+                ))
+            }
+        }
+    }
+    
+    /**
+     * Logs a warning message to both Android Log and the log stream
+     */
+    private fun logWarning(message: String, tag: String = TAG) {
+        Log.w(tag, message)
+        if (config.debug) {
+            scope.launch {
+                _logStream.emit(ULinkLogEntry(
+                    level = ULinkLogEntry.LEVEL_WARNING,
+                    tag = tag,
+                    message = message
+                ))
+            }
+        }
+    }
+    
+    /**
+     * Logs an error message to both Android Log and the log stream
+     */
+    private fun logError(message: String, throwable: Throwable? = null, tag: String = TAG) {
+        if (throwable != null) {
+            Log.e(tag, message, throwable)
+        } else {
+            Log.e(tag, message)
+        }
+        if (config.debug) {
+            val fullMessage = if (throwable != null) "$message: ${throwable.message}" else message
+            scope.launch {
+                _logStream.emit(ULinkLogEntry(
+                    level = ULinkLogEntry.LEVEL_ERROR,
+                    tag = tag,
+                    message = fullMessage
+                ))
+            }
+        }
+    }
     
     /**
      * Sets up the SDK
@@ -180,15 +262,193 @@ class ULink private constructor(
                 pendingSessionStart = false
                 startSessionIfNeeded()
             }
+            
+            // Check for deferred links after bootstrap completes (if enabled in config)
+            if (bootstrapSuccess && config.autoCheckDeferredLink) {
+                checkDeferredLink()
+            }
         }
         
         // Load last link data
         loadLastLinkData()
         
         if (config.debug) {
-            Log.d(TAG, "ULink SDK initialized with API key: ${config.apiKey}")
-            Log.d(TAG, "Installation ID: ${getInstallationId()}")
-            Log.d(TAG, "Installation Token: ${if (installationToken != null) "[LOADED]" else "[NOT FOUND]"}")
+            logInfo("ULink SDK initialized with API key: ${config.apiKey}")
+            logDebug("Installation ID: ${getInstallationId()}")
+            logDebug("Installation Token: ${if (installationToken != null) "[LOADED]" else "[NOT FOUND]"}")
+        }
+    }
+
+    /**
+     * Retrieves the clickId from Google Play Install Referrer
+     * This enables deterministic deferred deep link matching with 100% accuracy
+     * Returns null if Install Referrer is not available or doesn't contain clickId
+     */
+    private suspend fun getInstallReferrerClickId(): String? {
+        return suspendCoroutine { continuation ->
+            val referrerClient = InstallReferrerClient.newBuilder(context).build()
+            
+            referrerClient.startConnection(object : InstallReferrerStateListener {
+                override fun onInstallReferrerSetupFinished(responseCode: Int) {
+                    when (responseCode) {
+                        InstallReferrerClient.InstallReferrerResponse.OK -> {
+                            try {
+                                val response = referrerClient.installReferrer
+                                val referrer = response.installReferrer
+                                
+                                if (config.debug) {
+                                    logDebug("Install Referrer raw: $referrer")
+                                }
+                                
+                                // Parse clickId from referrer
+                                // Format: "click_id=abc123" or "utm_source=...&click_id=abc123"
+                                val clickId = referrer
+                                    .split("&")
+                                    .find { it.startsWith("click_id=") }
+                                    ?.substringAfter("click_id=")
+                                
+                                if (config.debug) {
+                                    logDebug("Extracted clickId: ${clickId ?: "not found"}")
+                                }
+                                
+                                continuation.resume(clickId)
+                            } catch (e: Exception) {
+                                if (config.debug) {
+                                    logError("Error parsing Install Referrer", e)
+                                }
+                                continuation.resume(null)
+                            } finally {
+                                referrerClient.endConnection()
+                            }
+                        }
+                        InstallReferrerClient.InstallReferrerResponse.FEATURE_NOT_SUPPORTED -> {
+                            if (config.debug) {
+                                logWarning("Install Referrer not supported on this device")
+                            }
+                            continuation.resume(null)
+                            referrerClient.endConnection()
+                        }
+                        InstallReferrerClient.InstallReferrerResponse.SERVICE_UNAVAILABLE -> {
+                            if (config.debug) {
+                                logWarning("Install Referrer service unavailable")
+                            }
+                            continuation.resume(null)
+                            referrerClient.endConnection()
+                        }
+                        else -> {
+                            if (config.debug) {
+                                logWarning("Install Referrer response code: $responseCode")
+                            }
+                            continuation.resume(null)
+                            referrerClient.endConnection()
+                        }
+                    }
+                }
+                
+                override fun onInstallReferrerServiceDisconnected() {
+                    if (config.debug) {
+                        logDebug("Install Referrer service disconnected")
+                    }
+                    continuation.resume(null)
+                }
+            })
+        }
+    }
+
+    /**
+     * Manually checks for deferred deep links
+     * This is useful when autoCheckDeferredLink is disabled in config
+     */
+    fun checkDeferredLink() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                logDebug("Starting deferred link check...")
+                
+                if (sharedPreferences.getBoolean("ulink_deferred_checked", false)) {
+                    logDebug("Deferred link already checked, skipping")
+                    return@launch
+                }
+
+                // Try to get Install Referrer clickId for deterministic matching
+                logDebug("Attempting to get Install Referrer clickId...")
+                val clickId = getInstallReferrerClickId()
+                
+                if (clickId != null) {
+                    logDebug("Will attempt deterministic match with clickId: $clickId")
+                } else {
+                    logDebug("No clickId available, will use fingerprint matching")
+                }
+
+                val fingerprint = mutableMapOf<String, Any>(
+                    "os" to "android",
+                    "model" to Build.MODEL,
+                    "brand" to Build.BRAND,
+                    "device" to Build.DEVICE,
+                    "manufacturer" to Build.MANUFACTURER,
+                    "product" to Build.PRODUCT,
+                    "hardware" to Build.HARDWARE,
+                    "id" to Build.ID
+                )
+
+                // Add common fields for browser matching
+                try {
+                    val displayMetrics = context.resources.displayMetrics
+                    // Use Math.round to match browser's window.screen.width/height calculation
+                    val width = Math.round(displayMetrics.widthPixels / displayMetrics.density)
+                    val height = Math.round(displayMetrics.heightPixels / displayMetrics.density)
+                    fingerprint["screenResolution"] = "${width}x${height}"
+                    
+                    fingerprint["timezone"] = TimeZone.getDefault().id
+                    fingerprint["language"] = Locale.getDefault().toLanguageTag()
+                    
+                    logDebug("Fingerprint collected: resolution=${fingerprint["screenResolution"]}, timezone=${fingerprint["timezone"]}, language=${fingerprint["language"]}")
+                } catch (e: Exception) {
+                    logError("Error collecting common fingerprint fields", e)
+                }
+
+                val url = "https://api.ulink.ly/sdk/deferred/match"
+                val headers = mapOf(
+                    "Content-Type" to "application/json",
+                    "X-App-Key" to config.apiKey
+                )
+                // Send both clickId (for deterministic) and fingerprint (for fallback)
+                val body: Map<String, Any> = if (clickId != null) {
+                    mapOf(
+                        "fingerprint" to fingerprint,
+                        "clickId" to clickId
+                    )
+                } else {
+                    mapOf("fingerprint" to fingerprint)
+                }
+
+                logInfo("Calling deferred match API: $url")
+                val response = httpClient.postJson(url, body, headers)
+                
+                if (response.isSuccess) {
+                    logDebug("Deferred match API response received successfully")
+                    val json = response.parseJson()
+                    val data = json?.get("data") as? JsonObject
+                    val deepLink = data?.get("deepLink")?.toString()?.removeSurrounding("\"")
+                    val matchType = json?.get("matchType")?.toString()?.removeSurrounding("\"")
+                    
+                    if (!deepLink.isNullOrEmpty() && deepLink != "null") {
+                        logInfo("Matched deferred link: $deepLink (matchType: $matchType)")
+                        // Handle the deep link with deferred flag
+                        Uri.parse(deepLink)?.let { uri ->
+                            handleDeepLink(uri, isDeferred = true, matchType = matchType)
+                        }
+                    } else {
+                        logDebug("No deferred link matched or deepLink is null")
+                    }
+                } else {
+                    logWarning("Deferred match API call failed: ${response.statusCode}")
+                }
+
+                sharedPreferences.edit().putBoolean("ulink_deferred_checked", true).apply()
+                logDebug("Deferred link check completed")
+            } catch (e: Exception) {
+                logError("Error checking deferred link", e)
+            }
         }
     }
     
@@ -198,13 +458,13 @@ class ULink private constructor(
     override fun onStart(owner: LifecycleOwner) {
         super.onStart(owner)
         if (config.debug) {
-            Log.d(TAG, "App started - starting session")
+            logDebug("App started - starting session")
         }
         scope.launch {
             if (!bootstrapCompleted) {
                 pendingSessionStart = true
                 if (config.debug) {
-                    Log.d(TAG, "App started but bootstrap pending - deferring session start")
+                    logDebug("App started but bootstrap pending - deferring session start")
                 }
                 return@launch
             }
@@ -218,7 +478,7 @@ class ULink private constructor(
     override fun onStop(owner: LifecycleOwner) {
         super.onStop(owner)
         if (config.debug) {
-            Log.d(TAG, "App stopped - ending session")
+            logDebug("App stopped - ending session")
         }
         scope.launch {
             if (!bootstrapCompleted) {
@@ -246,7 +506,7 @@ class ULink private constructor(
         sharedPreferences.edit().putString(KEY_INSTALLATION_ID, installationId).apply()
         
         if (config.debug) {
-            Log.d(TAG, "Generated new installation ID: $installationId")
+            logDebug("Generated new installation ID: $installationId")
         }
     }
     
@@ -257,11 +517,11 @@ class ULink private constructor(
         try {
             installationToken = sharedPreferences.getString(KEY_INSTALLATION_TOKEN, null)
             if (config.debug && installationToken != null) {
-                Log.d(TAG, "Loaded installation token from storage")
+                logDebug("Loaded installation token from storage")
             }
         } catch (e: Exception) {
             if (config.debug) {
-                Log.e(TAG, "Failed to load installation token", e)
+                logError("Failed to load installation token", e)
             }
         }
     }
@@ -274,11 +534,11 @@ class ULink private constructor(
         try {
             sharedPreferences.edit().putString(KEY_INSTALLATION_TOKEN, token).apply()
             if (config.debug) {
-                Log.d(TAG, "Saved installation token to storage")
+                logDebug("Saved installation token to storage")
             }
         } catch (e: Exception) {
             if (config.debug) {
-                Log.e(TAG, "Failed to save installation token", e)
+                logError("Failed to save installation token", e)
             }
         }
     }
@@ -299,7 +559,7 @@ class ULink private constructor(
                 val installationId = getInstallationId() ?: return@withContext false
                 
                 if (config.debug) {
-                    Log.d(TAG, "Bootstrapping installation and session")
+                    logDebug("Bootstrapping installation and session")
                 }
                 
                 val bootstrapData = buildBootstrapBodyMap()
@@ -335,7 +595,7 @@ class ULink private constructor(
                         if (!token.isNullOrEmpty()) {
                             saveInstallationToken(token)
                             if (config.debug) {
-                                Log.d(TAG, "Received and saved installation token")
+                                logDebug("Received and saved installation token")
                             }
                         }
                         
@@ -344,24 +604,24 @@ class ULink private constructor(
                         if (!sessionId.isNullOrEmpty()) {
                             currentSessionId = sessionId
                             if (config.debug) {
-                                Log.d(TAG, "Bootstrap ensured session: $sessionId")
+                                logDebug("Bootstrap ensured session: $sessionId")
                             }
                         }
                         
                         if (config.debug) {
-                            Log.d(TAG, "Bootstrap completed successfully")
+                            logInfo("Bootstrap completed successfully")
                         }
                         
                         return@withContext true
                     }
                 } else {
                     if (config.debug) {
-                        Log.e(TAG, "Bootstrap failed: HTTP ${response.statusCode}: ${response.body}")
+                        logError("Bootstrap failed: HTTP ${response.statusCode}: ${response.body}")
                     }
                 }
             } catch (e: Exception) {
                 if (config.debug) {
-                    Log.e(TAG, "Bootstrap error", e)
+                    logError("Bootstrap error", e)
                 }
             }
             return@withContext false
@@ -481,45 +741,54 @@ class ULink private constructor(
     /**
      * Handles incoming deep links
      */
-    fun handleDeepLink(uri: Uri) {
+    fun handleDeepLink(uri: Uri, isDeferred: Boolean = false, matchType: String? = null) {
         if (config.debug) {
-            Log.d(TAG, "Handling deep link: $uri")
+            logDebug("Handling deep link: $uri (isDeferred: $isDeferred, matchType: $matchType)")
         }
         
         scope.launch {
             try {
                 val resolvedData = resolveLink(uri.toString())
                 if (resolvedData.success && resolvedData.data != null) {
-                    val linkData = ULinkResolvedData.fromJsonObject(resolvedData.data!!)
-                    linkData?.let {
-                        if (config.debug) {
-                            Log.d(TAG, "Resolved link data:")
-                            Log.d(TAG, "  Type: ${it.type}")
-                            Log.d(TAG, "  Slug: ${it.slug}")
-                            Log.d(TAG, "  Fallback URL: ${it.fallbackUrl}")
-                            Log.d(TAG, "  Parameters: ${it.parameters}")
-                            Log.d(TAG, "  Metadata: ${it.metadata}")
-                            Log.d(TAG, "  Raw data: ${it.rawData}")
+                    val linkData = ULinkResolvedData.fromJsonObject(resolvedData.data)
+                    linkData.let {
+                        // Inject isDeferred and matchType if this came from deferred deep linking
+                        val enrichedLinkData = if (isDeferred) {
+                            it.copy(isDeferred = true, matchType = matchType)
+                        } else {
+                            it
                         }
                         
-                        lastLinkData = it
-                        saveLastLinkData(it)
+                        if (config.debug) {
+                            logInfo("Resolved link data:")
+                            logDebug("  Type: ${enrichedLinkData.type}")
+                            logDebug("  Slug: ${enrichedLinkData.slug}")
+                            logDebug("  Is Deferred: ${enrichedLinkData.isDeferred}")
+                            logDebug("  Match Type: ${enrichedLinkData.matchType}")
+                            logDebug("  Fallback URL: ${enrichedLinkData.fallbackUrl}")
+                            logDebug("  Parameters: ${enrichedLinkData.parameters}")
+                            logDebug("  Metadata: ${enrichedLinkData.metadata}")
+                            logDebug("  Raw data: ${enrichedLinkData.rawData}")
+                        }
+                        
+                        lastLinkData = enrichedLinkData
+                        saveLastLinkData(enrichedLinkData)
                         
                         // Emit to appropriate stream based on type
-                        when (it.type) {
-                            "dynamic" -> _dynamicLinkStream.emit(it)
-                            "unified" -> _unifiedLinkStream.emit(it)
-                            else -> _dynamicLinkStream.emit(it) // Default to dynamic
+                        when (enrichedLinkData.type) {
+                            "dynamic" -> _dynamicLinkStream.emit(enrichedLinkData)
+                            "unified" -> _unifiedLinkStream.emit(enrichedLinkData)
+                            else -> _dynamicLinkStream.emit(enrichedLinkData) // Default to dynamic
                         }
                     }
                 } else {
                     if (config.debug) {
-                        Log.d(TAG, "Failed to resolve link: ${resolvedData.error}")
+                        logWarning("Failed to resolve link: ${resolvedData.error}")
                     }
                 }
             } catch (e: Exception) {
                 if (config.debug) {
-                    Log.e(TAG, "Failed to handle deep link", e)
+                    logError("Failed to handle deep link", e)
                 }
             }
         }
@@ -531,7 +800,7 @@ class ULink private constructor(
     fun setInitialUri(uri: Uri?) {
         initialUri = uri
         if (config.debug) {
-            Log.d(TAG, "Set initial URI: $uri")
+            logDebug("Set initial URI: $uri")
         }
     }
     
@@ -550,45 +819,45 @@ class ULink private constructor(
     suspend fun processULinkUri(uri: Uri): ULinkResolvedData? {
         return try {
             if (config.debug) {
-                Log.d(TAG, "Processing URI: ${uri}")
+                logDebug("Processing URI: ${uri}")
             }
             
             // Always try to resolve the URI with the server to determine if it's a ULink
             if (config.debug) {
-                Log.d(TAG, "Querying server to resolve URI...")
+                logDebug("Querying server to resolve URI...")
             }
             val resolveResponse = resolveLink(uri.toString())
             
             if (resolveResponse.success && resolveResponse.data != null) {
-                val resolvedData = ULinkResolvedData.fromJsonObject(resolveResponse.data!!)
+                val resolvedData = ULinkResolvedData.fromJsonObject(resolveResponse.data)
                 if (config.debug) {
-                    Log.d(TAG, "Successfully resolved ULink data: ${resolvedData?.rawData}")
+                    logInfo("Successfully resolved ULink data: ${resolvedData.rawData}")
                 }
                 resolvedData
             } else {
                 // Differentiate between network errors and non-ULink responses
                 if (resolveResponse.error != null) {
-                    if (resolveResponse.error!!.contains("network") ||
-                        resolveResponse.error!!.contains("timeout") ||
-                        resolveResponse.error!!.contains("connection")) {
+                    if (resolveResponse.error.contains("network") ||
+                        resolveResponse.error.contains("timeout") ||
+                        resolveResponse.error.contains("connection")) {
                         if (config.debug) {
-                            Log.d(TAG, "Network error while resolving URI: ${resolveResponse.error}")
+                            logWarning("Network error while resolving URI: ${resolveResponse.error}")
                         }
                     } else {
                         if (config.debug) {
-                            Log.d(TAG, "URI is not a ULink: ${resolveResponse.error}")
+                            logDebug("URI is not a ULink: ${resolveResponse.error}")
                         }
                     }
                 } else {
                     if (config.debug) {
-                        Log.d(TAG, "Server responded but URI is not a ULink")
+                        logDebug("Server responded but URI is not a ULink")
                     }
                 }
                 null
             }
         } catch (e: Exception) {
             if (config.debug) {
-                Log.e(TAG, "Exception while processing ULink URI: $e")
+                logError("Exception while processing ULink URI: $e")
             }
             null
         }
@@ -602,26 +871,26 @@ class ULink private constructor(
             try {
                 val resolvedData = resolveLink(uri.toString())
                 if (resolvedData.success && resolvedData.data != null) {
-                    val linkData = ULinkResolvedData.fromJsonObject(resolvedData.data!!)
-                    if (config.debug && linkData != null) {
-                        Log.d(TAG, "Initial deep link resolved:")
-                        Log.d(TAG, "  Type: ${linkData.type}")
-                        Log.d(TAG, "  Slug: ${linkData.slug}")
-                        Log.d(TAG, "  Fallback URL: ${linkData.fallbackUrl}")
-                        Log.d(TAG, "  Parameters: ${linkData.parameters}")
-                        Log.d(TAG, "  Metadata: ${linkData.metadata}")
-                        Log.d(TAG, "  Raw data: ${linkData.rawData}")
+                    val linkData = ULinkResolvedData.fromJsonObject(resolvedData.data)
+                    if (config.debug) {
+                        logInfo("Initial deep link resolved:")
+                        logDebug("  Type: ${linkData.type}")
+                        logDebug("  Slug: ${linkData.slug}")
+                        logDebug("  Fallback URL: ${linkData.fallbackUrl}")
+                        logDebug("  Parameters: ${linkData.parameters}")
+                        logDebug("  Metadata: ${linkData.metadata}")
+                        logDebug("  Raw data: ${linkData.rawData}")
                     }
                     linkData
                 } else {
                     if (config.debug) {
-                        Log.d(TAG, "Failed to resolve initial deep link: ${resolvedData.error}")
+                        logWarning("Failed to resolve initial deep link: ${resolvedData.error}")
                     }
                     null
                 }
             } catch (e: Exception) {
                 if (config.debug) {
-                    Log.e(TAG, "Failed to resolve initial deep link", e)
+                    logError("Failed to resolve initial deep link", e)
                 }
                 null
             }
@@ -691,7 +960,7 @@ class ULink private constructor(
                 }
             } catch (e: Exception) {
                 if (config.debug) {
-                    Log.e(TAG, "Failed to create link", e)
+                    logError("Failed to create link", e)
                 }
                 ULinkResponse.error(e.message ?: "Unknown error")
             }
@@ -744,7 +1013,7 @@ class ULink private constructor(
                 }
             } catch (e: Exception) {
                 if (config.debug) {
-                    Log.e(TAG, "Failed to resolve link", e)
+                    logError("Failed to resolve link", e)
                 }
                 ULinkResponse.error(e.message ?: "Unknown error")
             }
@@ -859,7 +1128,7 @@ class ULink private constructor(
                         currentSessionId = sessionId
                         sessionState = SessionState.ACTIVE
                         if (config.debug) {
-                            Log.d(TAG, "Session started: $sessionId")
+                            logInfo("Session started: $sessionId")
                         }
                         // Complete the session future
                         sessionFuture?.complete(null)
@@ -878,7 +1147,7 @@ class ULink private constructor(
                 sessionState = SessionState.FAILED
                 sessionFuture?.complete(null)
                 if (config.debug) {
-                    Log.e(TAG, "Failed to start session", e)
+                    logError("Failed to start session", e)
                 }
                 ULinkSessionResponse.error(e.message ?: "Unknown error")
             }
@@ -908,20 +1177,20 @@ class ULink private constructor(
                     currentSessionId = null
                     sessionState = SessionState.IDLE
                     if (config.debug) {
-                        Log.d(TAG, "Session ended: $sessionId")
+                        logInfo("Session ended: $sessionId")
                     }
                     true
                 } else {
                     sessionState = SessionState.FAILED
                     if (config.debug) {
-                        Log.e(TAG, "Failed to end session: ${response.body}")
+                        logError("Failed to end session: ${response.body}")
                     }
                     false
                 }
             } catch (e: Exception) {
                 sessionState = SessionState.FAILED
                 if (config.debug) {
-                    Log.e(TAG, "Failed to end session", e)
+                    logError("Failed to end session", e)
                 }
                 false
             }
@@ -959,7 +1228,7 @@ class ULink private constructor(
                     future.get()
                 } catch (e: Exception) {
                     if (config.debug) {
-                        Log.e(TAG, "Error waiting for session initialization", e)
+                        logError("Error waiting for session initialization", e)
                     }
                     // Handle exception silently if debug is disabled
                 }
@@ -1079,7 +1348,7 @@ class ULink private constructor(
         if (intent.action == Intent.ACTION_VIEW) {
             intent.data?.let { uri ->
                 if (config.debug) {
-                    Log.d(TAG, "Automatic deep link detected: $uri")
+                    logDebug("Automatic deep link detected: $uri")
                 }
                 handleDeepLink(uri)
             }
@@ -1102,7 +1371,7 @@ class ULink private constructor(
         }
         
         if (config.debug) {
-            Log.d(TAG, "ULink SDK disposed")
+            logInfo("ULink SDK disposed")
         }
     }
 }

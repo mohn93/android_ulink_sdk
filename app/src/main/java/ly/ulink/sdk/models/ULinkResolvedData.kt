@@ -57,6 +57,16 @@ data class ULinkResolvedData(
     val type: String? = null,
     
     /**
+     * Whether this link was resolved from deferred deep linking
+     */
+    val isDeferred: Boolean = false,
+    
+    /**
+     * Match type for deferred links: 'deterministic', 'fingerprint', or null for regular links
+     */
+    val matchType: String? = null,
+    
+    /**
      * Raw data from the API response
      */
     val rawData: JsonObject? = null
@@ -83,6 +93,8 @@ data class ULinkResolvedData(
             val androidFallbackUrl = json["androidFallbackUrl"]?.jsonPrimitive?.content
             val fallbackUrl = json["fallbackUrl"]?.jsonPrimitive?.content
             val type = json["type"]?.jsonPrimitive?.content
+            val isDeferred = json["isDeferred"]?.jsonPrimitive?.content?.toBoolean() ?: false
+            val matchType = json["matchType"]?.jsonPrimitive?.content
             
             // Extract parameters
             val parameters = json["parameters"]
@@ -108,6 +120,8 @@ data class ULinkResolvedData(
                 socialMediaTags = socialMediaTags,
                 metadata = metadata,
                 type = type,
+                isDeferred = isDeferred,
+                matchType = matchType,
                 rawData = json
             )
         }

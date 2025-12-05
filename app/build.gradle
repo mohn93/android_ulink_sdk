@@ -7,7 +7,7 @@ apply plugin: 'signing'
 
 
 group = "ly.ulink"         // your approved groupId
-version = "1.0.4"               // semver
+version = "1.0.5"               // semver
 
 android {
     namespace = "ly.ulink.sdk"
@@ -58,6 +58,9 @@ dependencies {
     
     // Serialization
     implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0'
+    
+    // Google Play Install Referrer (for deterministic deferred deep linking)
+    implementation 'com.android.installreferrer:installreferrer:2.2'
     
     // Testing
     testImplementation 'junit:junit:4.13.2'

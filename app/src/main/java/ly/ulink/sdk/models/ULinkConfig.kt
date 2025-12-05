@@ -34,5 +34,11 @@ data class ULinkConfig(
     /** If true, do not persist parameters/metadata for the last link */
     val redactAllParametersInLastLink: Boolean = false,
     /** Keys to redact from parameters/metadata when persisting the last link */
-    val redactedParameterKeysInLastLink: List<String> = emptyList()
+    val redactedParameterKeysInLastLink: List<String> = emptyList(),
+    
+    /**
+     * If true, automatically checks for deferred deep links on first app launch
+     * If false, developers must manually call checkDeferredLink() when ready
+     */
+    val autoCheckDeferredLink: Boolean = true
 )
