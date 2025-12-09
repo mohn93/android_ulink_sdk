@@ -137,6 +137,34 @@ object DeviceInfoUtils {
     }
     
     /**
+     * Gets the persistent device ID that survives app reinstalls.
+     * 
+     * This uses Android's ANDROID_ID which:
+     * - Persists across app reinstalls
+     * - Changes after factory reset
+     * - Is unique per app signing key and user combination
+     * 
+     * Used for reinstall detection - when the same persistentDeviceId
+     * appears with a different installationId, it indicates a reinstall.
+     * 
+     * @param context Application context
+     * @return The persistent device ID, or null if unavailable
+     */
+    fun getPersistentDeviceId(context: Context): String? {
+        return try {
+            val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+            // Validate ANDROID_ID - some devices return a known invalid value
+            if (!androidId.isNullOrEmpty() && androidId != "9774d56d682e549c") {
+                androidId
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    /**
      * Gets the network type
      */
     fun getNetworkType(context: Context): String {
@@ -343,6 +371,7 @@ object DeviceInfoUtils {
             
             // Device identifiers
             deviceInfo["deviceId"] = getDeviceId(context)
+            deviceInfo["persistentDeviceId"] = getPersistentDeviceId(context)
             
             // Locale and timezone
             deviceInfo["language"] = getLanguage()

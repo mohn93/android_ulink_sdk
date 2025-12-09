@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.serialization.json.*
 import ly.ulink.sdk.models.*
+import ly.ulink.sdk.models.ULinkInitializationError
 import ly.ulink.sdk.network.HttpClient
 import ly.ulink.sdk.utils.DeviceInfoUtils
 import java.util.*
@@ -50,7 +51,7 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
-        private const val SDK_VERSION = "1.0.5"
+        private const val SDK_VERSION = "1.0.6"
         
         @Volatile
         private var INSTANCE: ULink? = null
@@ -85,21 +86,78 @@ class ULink private constructor(
          * }
          * ```
          */
-        fun initialize(
+        /**
+         * Initialize the ULink SDK
+         * 
+         * This method is now suspend and will await bootstrap completion.
+         * It throws ULinkInitializationError if essential operations fail.
+         * Thread-safe with double-checked locking to prevent duplicate initialization.
+         * 
+         * @param context The application context
+         * @param config The SDK configuration
+         * @param httpClient Optional HTTP client for testing
+         * @return The initialized ULink instance
+         * @throws ULinkInitializationError if initialization fails
+         */
+        @Volatile
+        private var isInitializing = false
+        private val initLock = Any()
+        
+        suspend fun initialize(
             context: Context,
             config: ULinkConfig,
             httpClient: HttpClient? = null
         ): ULink {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: ULink(context.applicationContext, config, httpClient).also {
-                    INSTANCE = it
-                    it.setup()
+            // Fast path: already initialized successfully
+            val existingInstance = INSTANCE
+            if (existingInstance != null && existingInstance.bootstrapSucceeded) {
+                return existingInstance
+            }
+            
+            // Thread-safe initialization with synchronization
+            synchronized(initLock) {
+                // Double-check after acquiring lock
+                val instance = INSTANCE
+                if (instance != null) {
+                    if (instance.bootstrapSucceeded) {
+                        return instance
+                    }
+                    
+                    // Bootstrap failed or didn't complete - retry only if not currently initializing
+                    if (!isInitializing) {
+                        isInitializing = true
+                        try {
+                            instance.bootstrapCompleted = false
+                            instance.bootstrapSucceeded = false
+                            kotlinx.coroutines.runBlocking {
+                                instance.setup()
+                            }
+                        } finally {
+                            isInitializing = false
+                        }
+                    }
+                    return instance
+                }
+                
+                // Create new instance - protected by lock
+                isInitializing = true
+                try {
+                    val newInstance = ULink(context.applicationContext, config, httpClient)
+                    INSTANCE = newInstance
+                    kotlinx.coroutines.runBlocking {
+                        newInstance.setup()
+                    }
+                    return newInstance
+                } finally {
+                    isInitializing = false
                 }
             }
         }
 
         fun createTestInstance(context: Context, config: ULinkConfig, httpClient: HttpClient): ULink {
-            return initialize(context, config, httpClient)
+            return runBlocking {
+                initialize(context, config, httpClient)
+            }
         }
         
         /**
@@ -120,9 +178,23 @@ class ULink private constructor(
     // Installation token
     private var installationToken: String? = null
     
+    // Installation info (including reinstall detection)
+    private var _installationInfo: ULinkInstallationInfo? = null
+    
+    // Reinstall detection stream
+    private val _reinstallDetectedStream = MutableSharedFlow<ULinkInstallationInfo>(replay = 1)
+    
+    /**
+     * Flow that emits when a reinstall is detected.
+     * The emitted ULinkInstallationInfo contains details about the reinstall,
+     * including the previous installation ID.
+     */
+    val onReinstallDetected: SharedFlow<ULinkInstallationInfo> = _reinstallDetectedStream.asSharedFlow()
+    
     // Session management
     private var currentSessionId: String? = null
     private var bootstrapCompleted = false
+    private var bootstrapSucceeded = false
     private var pendingSessionStart = false
     
     /**
@@ -236,8 +308,13 @@ class ULink private constructor(
     
     /**
      * Sets up the SDK
+     * 
+     * This method is now suspend and awaits bootstrap completion.
+     * It throws ULinkInitializationError if essential operations fail.
+     * 
+     * @throws ULinkInitializationError if bootstrap fails
      */
-    private fun setup() {
+    private suspend fun setup() {
         // Register lifecycle observer
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
         
@@ -254,28 +331,48 @@ class ULink private constructor(
             generateInstallationId()
         }
         
-        // Bootstrap installation and session with the server
-        scope.launch {
-            val bootstrapSuccess = bootstrap()
-            bootstrapCompleted = bootstrapSuccess
-            if (bootstrapSuccess && pendingSessionStart) {
-                pendingSessionStart = false
-                startSessionIfNeeded()
-            }
-            
-            // Check for deferred links after bootstrap completes (if enabled in config)
-            if (bootstrapSuccess && config.autoCheckDeferredLink) {
-                checkDeferredLink()
-            }
-        }
-        
-        // Load last link data
+        // Load last link data (non-essential, don't throw)
         loadLastLinkData()
         
         if (config.debug) {
             logInfo("ULink SDK initialized with API key: ${config.apiKey}")
             logDebug("Installation ID: ${getInstallationId()}")
             logDebug("Installation Token: ${if (installationToken != null) "[LOADED]" else "[NOT FOUND]"}")
+        }
+        
+        // Bootstrap installation and session with the server (essential - await and throw on failure)
+        try {
+            bootstrap()
+            bootstrapSucceeded = true
+            bootstrapCompleted = true
+            
+            if (pendingSessionStart) {
+                pendingSessionStart = false
+                startSessionIfNeeded()
+            }
+            
+            // Check for deferred links after bootstrap completes (if enabled in config)
+            // Launch in background coroutine (non-blocking) to match iOS behavior
+            if (config.autoCheckDeferredLink) {
+                scope.launch {
+                    try {
+                        checkDeferredLink()
+                    } catch (e: Exception) {
+                        logError("Error checking deferred link during setup", e)
+                    }
+                }
+            }
+        } catch (e: ULinkInitializationError) {
+            bootstrapSucceeded = false
+            bootstrapCompleted = true
+            throw e
+        } catch (e: Exception) {
+            bootstrapSucceeded = false
+            bootstrapCompleted = true
+            throw ULinkInitializationError.bootstrapFailed(
+                statusCode = 0,
+                message = "Bootstrap failed: ${e.message ?: "Unknown error"}"
+            )
         }
     }
 
@@ -360,6 +457,9 @@ class ULink private constructor(
      * This is useful when autoCheckDeferredLink is disabled in config
      */
     fun checkDeferredLink() {
+        // Ensure bootstrap completed before checking deferred links
+        ensureBootstrapCompleted()
+        
         scope.launch(Dispatchers.IO) {
             try {
                 logDebug("Starting deferred link check...")
@@ -411,15 +511,17 @@ class ULink private constructor(
                     "Content-Type" to "application/json",
                     "X-App-Key" to config.apiKey
                 )
-                // Send both clickId (for deterministic) and fingerprint (for fallback)
-                val body: Map<String, Any> = if (clickId != null) {
-                    mapOf(
-                        "fingerprint" to fingerprint,
-                        "clickId" to clickId
-                    )
-                } else {
-                    mapOf("fingerprint" to fingerprint)
-                }
+                
+                // Build body with fingerprint, clickId (from Install Referrer), and installationId (for attribution)
+                val bodyMap = mutableMapOf<String, Any>("fingerprint" to fingerprint)
+                
+                // Add clickId from Install Referrer if available (for deterministic matching)
+                clickId?.let { bodyMap["clickId"] = it }
+                
+                // Add installationId for attribution
+                getInstallationId()?.let { bodyMap["installationId"] = it }
+                
+                val body: Map<String, Any> = bodyMap
 
                 logInfo("Calling deferred match API: $url")
                 val response = httpClient.postJson(url, body, headers)
@@ -462,12 +564,21 @@ class ULink private constructor(
         }
         scope.launch {
             if (!bootstrapCompleted) {
+                // Retry bootstrap silently if it hasn't completed yet
+                if (config.debug) {
+                    logDebug("App started but bootstrap not yet completed - retrying bootstrap")
+                }
+                bootstrapSilent()
+            }
+            
+            if (!bootstrapSucceeded) {
                 pendingSessionStart = true
                 if (config.debug) {
-                    logDebug("App started but bootstrap pending - deferring session start")
+                    logDebug("Bootstrap failed - deferring session start")
                 }
                 return@launch
             }
+            
             startSessionIfNeeded()
         }
     }
@@ -496,6 +607,38 @@ class ULink private constructor(
      */
     fun getInstallationId(): String? {
         return sharedPreferences.getString(KEY_INSTALLATION_ID, null)
+    }
+    
+    /**
+     * Gets the installation info including reinstall detection data.
+     * 
+     * This information is available after the SDK has completed bootstrapping.
+     * If this is a reinstall, the returned object will have isReinstall=true
+     * and previousInstallationId will contain the ID of the previous installation.
+     * 
+     * @return ULinkInstallationInfo or null if bootstrap hasn't completed
+     */
+    fun getInstallationInfo(): ULinkInstallationInfo? {
+        return _installationInfo
+    }
+    
+    /**
+     * Checks if the current installation is a reinstall.
+     * 
+     * @return true if this is a reinstall, false otherwise or if bootstrap hasn't completed
+     */
+    fun isReinstall(): Boolean {
+        return _installationInfo?.isReinstall ?: false
+    }
+    
+    /**
+     * Gets the persistent device ID that survives app reinstalls.
+     * This is used for reinstall detection.
+     * 
+     * @return The persistent device ID or null if unavailable
+     */
+    fun getPersistentDeviceId(): String? {
+        return DeviceInfoUtils.getPersistentDeviceId(context)
     }
     
     /**
@@ -553,35 +696,46 @@ class ULink private constructor(
     /**
      * Bootstrap installation and session via single API call
      */
-    private suspend fun bootstrap(): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val installationId = getInstallationId() ?: return@withContext false
-                
-                if (config.debug) {
-                    logDebug("Bootstrapping installation and session")
-                }
-                
-                val bootstrapData = buildBootstrapBodyMap()
-                val url = "${config.baseUrl}/sdk/bootstrap"
-                val headers = mutableMapOf(
-                    "X-App-Key" to config.apiKey,
-                    "Content-Type" to "application/json",
-                    "X-ULink-Client" to "sdk-android",
-                    "X-ULink-Client-Version" to SDK_VERSION, // TODO: Get from build config
-                    "X-ULink-Client-Platform" to "android"
+    /**
+     * Bootstrap the SDK by tracking installation and starting a session.
+     * 
+     * This method now throws ULinkInitializationError instead of returning Boolean.
+     * 
+     * @throws ULinkInitializationError if bootstrap fails
+     */
+    private suspend fun bootstrap() {
+        withContext(Dispatchers.IO) {
+            val installationId = getInstallationId() 
+                ?: throw ULinkInitializationError.bootstrapFailed(
+                    statusCode = 0,
+                    message = "Installation ID is required for bootstrap"
                 )
-                
-                // Add installation ID if available
-                if (installationId.isNotEmpty()) {
-                    headers["X-Installation-Id"] = installationId
-                }
-                
-                // Add device ID if available
-                DeviceInfoUtils.getDeviceId(context)?.let {
-                    headers["X-Device-Id"] = it
-                }
-                
+            
+            if (config.debug) {
+                logDebug("Bootstrapping installation and session")
+            }
+            
+            val bootstrapData = buildBootstrapBodyMap()
+            val url = "${config.baseUrl}/sdk/bootstrap"
+            val headers = mutableMapOf(
+                "X-App-Key" to config.apiKey,
+                "Content-Type" to "application/json",
+                "X-ULink-Client" to "sdk-android",
+                "X-ULink-Client-Version" to SDK_VERSION,
+                "X-ULink-Client-Platform" to "android"
+            )
+            
+            // Add installation ID if available
+            if (installationId.isNotEmpty()) {
+                headers["X-Installation-Id"] = installationId
+            }
+            
+            // Add device ID if available
+            DeviceInfoUtils.getDeviceId(context)?.let {
+                headers["X-Device-Id"] = it
+            }
+            
+            try {
                 val response = httpClient.postJson(url, bootstrapData, headers)
                 
                 if (response.isSuccess) {
@@ -608,23 +762,98 @@ class ULink private constructor(
                             }
                         }
                         
-                        if (config.debug) {
-                            logInfo("Bootstrap completed successfully")
+                        // Parse and store installation info (including reinstall detection)
+                        val persistentDeviceId = DeviceInfoUtils.getPersistentDeviceId(context)
+                        _installationInfo = ULinkInstallationInfo.fromJson(json, installationId).copy(
+                            persistentDeviceId = persistentDeviceId
+                        )
+                        
+                        // Emit reinstall event if detected
+                        if (_installationInfo?.isReinstall == true) {
+                            if (config.debug) {
+                                logInfo("Reinstall detected! Previous installation: ${_installationInfo?.previousInstallationId}")
+                            }
+                            scope.launch {
+                                _reinstallDetectedStream.emit(_installationInfo!!)
+                            }
                         }
                         
-                        return@withContext true
+                        if (config.debug) {
+                            logInfo("Bootstrap completed successfully")
+                            if (_installationInfo?.isReinstall == true) {
+                                logDebug("Installation info: isReinstall=true, previousInstallationId=${_installationInfo?.previousInstallationId}")
+                            }
+                        }
+                    } else {
+                        throw ULinkInitializationError.bootstrapFailed(
+                            statusCode = response.statusCode,
+                            message = "Bootstrap response is not valid JSON"
+                        )
                     }
                 } else {
-                    if (config.debug) {
-                        logError("Bootstrap failed: HTTP ${response.statusCode}: ${response.body}")
-                    }
+                    val errorMessage = "Bootstrap failed: HTTP ${response.statusCode}: ${response.body}"
+                    logError(errorMessage)
+                    throw ULinkInitializationError.bootstrapFailed(
+                        statusCode = response.statusCode,
+                        message = errorMessage
+                    )
                 }
+            } catch (e: ULinkInitializationError) {
+                throw e
             } catch (e: Exception) {
-                if (config.debug) {
-                    logError("Bootstrap error", e)
-                }
+                val errorMessage = "Bootstrap error: ${e.message ?: "Unknown error"}"
+                logError(errorMessage, e)
+                throw ULinkInitializationError.bootstrapFailed(
+                    statusCode = 0,
+                    message = errorMessage,
+                    cause = e
+                )
             }
-            return@withContext false
+        }
+    }
+    
+    /**
+     * Bootstrap guard - ensures bootstrap has completed successfully before allowing SDK operations.
+     * 
+     * Call this at the start of any method that requires the SDK to be fully initialized.
+     * 
+     * @throws ULinkInitializationError if bootstrap hasn't completed or failed
+     */
+    private fun ensureBootstrapCompleted() {
+        if (!bootstrapCompleted) {
+            logError("SDK method called before initialization complete")
+            throw ULinkInitializationError.bootstrapFailed(
+                statusCode = 0,
+                message = "SDK initialization not complete. Ensure initialize() completes successfully before calling SDK methods."
+            )
+        }
+        
+        if (!bootstrapSucceeded) {
+            logError("SDK method called after initialization failed")
+            throw ULinkInitializationError.bootstrapFailed(
+                statusCode = 0,
+                message = "SDK initialization failed. Check the error from initialize() method and retry initialization."
+            )
+        }
+    }
+    
+    /**
+     * Silent bootstrap for lifecycle retries (non-throwing version)
+     * Used when app becomes active and bootstrap needs to be retried
+     */
+    private suspend fun bootstrapSilent() {
+        try {
+            bootstrap()
+            bootstrapSucceeded = true
+            bootstrapCompleted = true
+        } catch (e: ULinkInitializationError) {
+            logError("Bootstrap error (silent)", e)
+            bootstrapSucceeded = false
+            bootstrapCompleted = true
+        } catch (e: Exception) {
+            logError("Bootstrap error (silent)", e)
+            bootstrapSucceeded = false
+            bootstrapCompleted = true
         }
     }
     
@@ -638,6 +867,9 @@ class ULink private constructor(
         val currentInstallationId = getInstallationId()
         currentInstallationId?.let { bootstrapData["installationId"] = it }
         DeviceInfoUtils.getDeviceId(context)?.let { bootstrapData["deviceId"] = it }
+        
+        // Persistent device ID for reinstall detection (survives app reinstalls)
+        DeviceInfoUtils.getPersistentDeviceId(context)?.let { bootstrapData["persistentDeviceId"] = it }
         
         // Device details
         bootstrapData["deviceModel"] = Build.MODEL
@@ -913,6 +1145,9 @@ class ULink private constructor(
      * Creates a dynamic link
      */
     suspend fun createLink(parameters: ULinkParameters): ULinkResponse {
+        // Ensure bootstrap completed before allowing link creation
+        ensureBootstrapCompleted()
+        
         return withContext(Dispatchers.IO) {
             try {
                 val url = "${config.baseUrl}/sdk/links"
@@ -971,6 +1206,9 @@ class ULink private constructor(
      * Resolves a dynamic link
      */
     suspend fun resolveLink(url: String): ULinkResponse {
+        // Ensure bootstrap completed before allowing link resolution
+        ensureBootstrapCompleted()
+        
         return withContext(Dispatchers.IO) {
             try {
                 val resolveUrl = "${config.baseUrl}/sdk/resolve?url=${Uri.encode(url)}"
