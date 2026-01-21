@@ -6,37 +6,65 @@ The ULink Android SDK provides a comprehensive solution for creating, managing, 
 
 - **Dynamic Link Creation**: Create dynamic links with custom parameters and social media tags
 - **Deep Link Handling**: Automatically handle incoming deep links and extract parameters
-- **Session Tracking**: Track user sessions with automatic device information collection
-- **Installation Tracking**: Monitor app installations and user engagement
+- **Session Tracking**: Automatic session management with lifecycle handling
+- **Installation Tracking**: Monitor app installations and detect reinstalls
 - **Unified Links**: Support for unified links across multiple platforms
 - **Social Media Integration**: Add Open Graph tags for better social media sharing
 - **Real-time Streams**: Listen to deep link events in real-time
+- **Deferred Deep Links**: Handle deep links from app install referrers
+- **Debug Logging**: Stream SDK logs for debugging
 
 ## Installation
 
-### Using JitPack
+### Using Maven Central (Recommended)
 
-Add the JitPack repository to your project's `settings.gradle.kts`:
+The ULink Android SDK is published to Maven Central and can be added to your project with a single dependency declaration.
+
+Add the dependency to your app's build file:
+
+#### Kotlin DSL (build.gradle.kts)
+
+```kotlin
+dependencies {
+    implementation("ly.ulink:ulink-sdk:1.0.6")
+}
+```
+
+#### Groovy DSL (build.gradle)
+
+```groovy
+dependencies {
+    implementation 'ly.ulink:ulink-sdk:1.0.6'
+}
+```
+
+Ensure Maven Central is in your repositories (usually configured in `settings.gradle.kts` or `settings.gradle`):
+
+#### Kotlin DSL (settings.gradle.kts)
 
 ```kotlin
 dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
     }
 }
 ```
 
-Add the dependency to your app's `build.gradle.kts`:
+#### Groovy DSL (settings.gradle)
 
-```kotlin
-dependencies {
-    implementation("com.github.yourusername:android-ulink-sdk:1.0.0")
+```groovy
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
 }
 ```
 
-### Local Installation
+### Local Installation (Development Only)
+
+For local development or testing unreleased versions:
 
 1. Clone this repository
 2. Build the library: `./gradlew build`
@@ -45,29 +73,109 @@ dependencies {
 
 ```kotlin
 dependencies {
-    implementation("ly.ulink.sdk:android-sdk:1.0.0")
+    implementation("ly.ulink:ulink-sdk:1.0.6")
 }
+```
+
+5. Add Maven Local to your repositories:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        mavenLocal()
+        google()
+        mavenCentral()
+    }
+}
+```
+
+## Using from Java
+
+The ULink Android SDK is fully compatible with Java projects. The SDK provides two async patterns:
+
+- **CompletableFuture** (Recommended): Modern Java 8+ approach with chainable operations
+- **Callbacks**: Traditional callback-style for backward compatibility
+
+For comprehensive Java integration examples, see [JAVA_INTEGRATION.md](JAVA_INTEGRATION.md).
+
+Quick Java example:
+
+```java
+// Using CompletableFuture (Recommended)
+ULink.initializeAsync(context, config)
+    .thenAccept(ulink -> {
+        Log.d("ULink", "SDK initialized");
+    })
+    .exceptionally(error -> {
+        Log.e("ULink", "Init failed", error);
+        return null;
+    });
+
+// Using Callbacks
+ULink.initialize(context, config,
+    ulink -> Log.d("ULink", "SDK initialized"),
+    error -> Log.e("ULink", "Init failed", error)
+);
 ```
 
 ## Quick Start
 
 ### 1. Initialize the SDK
 
+**Kotlin:**
+
 ```kotlin
 import ly.ulink.sdk.ULink
-import ly.ulink.sdk.ULinkConfig
+import ly.ulink.sdk.models.ULinkConfig
 
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        
+
         val config = ULinkConfig(
             apiKey = "your-api-key",
             baseUrl = "https://api.ulink.ly", // Optional, defaults to this URL
-            debug = BuildConfig.DEBUG
+            debug = BuildConfig.DEBUG,
+            enableDeepLinkIntegration = true // Automatic deep link handling
         )
-        
+
         ULink.initialize(this, config)
+    }
+}
+```
+
+**Java (CompletableFuture):**
+
+```java
+import ly.ulink.sdk.ULink;
+import ly.ulink.sdk.models.ULinkConfig;
+
+public class MyApplication extends Application {
+    @Override
+    public void onCreate() {
+        super.onCreate();
+
+        ULinkConfig config = new ULinkConfig(
+            "your-api-key",
+            "https://api.ulink.ly",
+            BuildConfig.DEBUG,  // debug
+            true,               // enableDeepLinkIntegration
+            true,               // persistLastLinkData
+            86400,              // lastLinkTimeToLiveSeconds (24 hours)
+            false,              // clearLastLinkOnRead
+            false,              // redactAllParametersInLastLink
+            Collections.emptyList(), // redactedParameterKeysInLastLink
+            true                // autoCheckDeferredLink
+        );
+
+        ULink.initializeAsync(this, config)
+            .thenAccept(ulink -> {
+                Log.d("ULink", "SDK initialized");
+            })
+            .exceptionally(error -> {
+                Log.e("ULink", "Initialization failed", error);
+                return null;
+            });
     }
 }
 ```
@@ -76,47 +184,75 @@ class MyApplication : Application() {
 
 #### Option A: Automatic Deep Link Integration (Recommended)
 
-With `enableDeepLinkIntegration = true` in your config, the SDK automatically handles deep links:
+With `enableDeepLinkIntegration = true` in your config, the SDK automatically handles deep links.
+
+**Kotlin:**
 
 ```kotlin
 class MainActivity : AppCompatActivity() {
     private lateinit var ulink: ULink
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        
-        // Initialize with automatic deep link integration
-        val config = ULinkConfig(
-            apiKey = "your_api_key",
-            baseUrl = "https://api.ulink.ly",
-            enableDeepLinkIntegration = true // Enables automatic handling
-        )
-        ulink = ULink.initialize(this, config)
-        
+
+        ulink = ULink.getInstance()
+
         // Just listen to the streams - no manual intent handling needed!
         observeDeepLinks()
     }
-    
+
     private fun observeDeepLinks() {
         lifecycleScope.launch {
             ulink.dynamicLinkStream.collect { linkData ->
                 handleDeepLink(linkData)
             }
         }
-        
+
         lifecycleScope.launch {
             ulink.unifiedLinkStream.collect { linkData ->
                 handleDeepLink(linkData)
             }
         }
     }
-    
+
     private fun handleDeepLink(data: ULinkResolvedData) {
         // Handle the deep link data
         println("Received deep link: ${data.slug}")
         println("Parameters: ${data.parameters}")
         println("Fallback URL: ${data.fallbackUrl}")
+    }
+}
+```
+
+**Java:**
+
+```java
+public class MainActivity extends AppCompatActivity {
+    private ULink ulink;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        ulink = ULink.getInstance();
+
+        // Set up listeners (Java-friendly alternative to Kotlin Flows)
+        ulink.setOnLinkListener(data -> {
+            Log.d("ULink", "Dynamic link: " + data.getSlug());
+            handleDeepLink(data);
+        });
+
+        ulink.setOnUnifiedLinkListener(data -> {
+            Log.d("ULink", "Unified link: " + data.getSlug());
+            handleDeepLink(data);
+        });
+    }
+
+    private void handleDeepLink(ULinkResolvedData data) {
+        // Handle the deep link data
+        Log.d("ULink", "Parameters: " + data.getParameters());
     }
 }
 ```
@@ -128,58 +264,52 @@ If you prefer manual control or need backward compatibility:
 ```kotlin
 class MainActivity : AppCompatActivity() {
     private lateinit var ulink: ULink
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        
+
         // Initialize with manual handling
         val config = ULinkConfig(
             apiKey = "your_api_key",
-            // enableDeepLinkIntegration = false // Disable automatic handling
+            enableDeepLinkIntegration = false // Disable automatic handling
         )
         ulink = ULink.initialize(this, config)
-        
+
         // Handle initial intent
         handleIntent(intent)
         observeDeepLinks()
     }
-    
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
     }
-    
+
     private fun handleIntent(intent: Intent?) {
         intent?.data?.let { uri ->
             ulink.handleDeepLink(uri)
         }
     }
-    
+
     private fun observeDeepLinks() {
         lifecycleScope.launch {
             ulink.dynamicLinkStream.collect { linkData ->
                 handleDeepLink(linkData)
             }
         }
-        
-        lifecycleScope.launch {
-            ulink.unifiedLinkStream.collect { linkData ->
-                handleDeepLink(linkData)
-            }
-        }
     }
-    
+
     private fun handleDeepLink(data: ULinkResolvedData) {
-        // Handle the deep link data
         println("Received deep link: ${data.slug}")
         println("Parameters: ${data.parameters}")
-        println("Fallback URL: ${data.fallbackUrl}")
     }
 }
 ```
 
 ### 3. Create Dynamic Links
+
+**Kotlin:**
 
 ```kotlin
 // Create a dynamic link
@@ -212,6 +342,46 @@ lifecycleScope.launch {
 }
 ```
 
+**Java (CompletableFuture):**
+
+```java
+// Create dynamic link parameters
+Map<String, Object> params = new HashMap<>();
+params.put("productId", "12345");
+params.put("category", "electronics");
+
+SocialMediaTags socialTags = new SocialMediaTags(
+    "Check out this amazing product!",
+    "This product will change your life",
+    "https://mywebsite.com/product-image.jpg"
+);
+
+ULinkParameters parameters = ULinkParameters.dynamic(
+    "links.shared.ly",              // domain
+    "my-product",                   // slug
+    "https://apps.apple.com/...",   // iOS fallback
+    "https://play.google.com/...",  // Android fallback
+    "https://mywebsite.com/product", // fallback URL
+    params,                         // parameters
+    socialTags,                     // social media tags
+    null                            // metadata
+);
+
+ulink.createLinkAsync(parameters)
+    .thenAccept(response -> {
+        if (response.getSuccess()) {
+            String url = response.getUrl();
+            shareLink(url);
+        } else {
+            Log.e("ULink", "Error: " + response.getError());
+        }
+    })
+    .exceptionally(error -> {
+        Log.e("ULink", "Failed to create link", error);
+        return null;
+    });
+```
+
 ### 4. Create Unified Links
 
 ```kotlin
@@ -233,31 +403,119 @@ lifecycleScope.launch {
 }
 ```
 
-### 5. Session Management
+### 5. Installation Tracking & Reinstall Detection
+
+The SDK automatically tracks installations and can detect reinstalls:
+
+**Kotlin:**
 
 ```kotlin
-// Start a session with custom metadata
+// Get installation information
+val installationId = ulink.getInstallationId()
+val installationInfo = ulink.getInstallationInfo()
+val isReinstall = ulink.isReinstall()
+val persistentDeviceId = ulink.getPersistentDeviceId()
+
+// Listen for reinstall detection
 lifecycleScope.launch {
-    val sessionResponse = ulink.startSession(
-        metadata = mapOf(
-            "userId" to "user123",
-            "campaign" to "summer2024"
-        )
-    )
-    
-    if (sessionResponse.success) {
-        println("Session started: ${sessionResponse.sessionId}")
+    ulink.onReinstallDetected.collect { info ->
+        println("Reinstall detected!")
+        println("Previous installation ID: ${info.previousInstallationId}")
+        println("Detected at: ${info.reinstallDetectedAt}")
+    }
+}
+```
+
+**Java:**
+
+```java
+// Get installation information
+String installationId = ulink.getInstallationId();
+ULinkInstallationInfo info = ulink.getInstallationInfo();
+boolean isReinstall = ulink.isReinstall();
+
+// Listen for reinstall detection
+ulink.setOnReinstallListener(info -> {
+    Log.d("ULink", "Reinstall detected! Previous ID: " + info.getPreviousInstallationId());
+});
+```
+
+### 6. Session Management
+
+Sessions are managed automatically by the SDK. You can end a session manually when the user logs out:
+
+**Kotlin:**
+
+```kotlin
+// End the current session
+lifecycleScope.launch {
+    val success = ulink.endSession()
+    if (success) {
+        println("Session ended successfully")
     }
 }
 
-// End the current session
-lifecycleScope.launch {
-    ulink.endSession()
-}
-
-// Check if there's an active session
+// Check session state
 val hasActiveSession = ulink.hasActiveSession()
 val currentSessionId = ulink.getCurrentSessionId()
+val sessionState = ulink.getSessionState() // INITIALIZING, ACTIVE, ENDED, ERROR
+val isInitializing = ulink.isSessionInitializing()
+```
+
+**Java (CompletableFuture):**
+
+```java
+// End the current session
+ulink.endSessionAsync()
+    .thenAccept(success -> {
+        if (success) {
+            Log.d("ULink", "Session ended successfully");
+        }
+    })
+    .exceptionally(error -> {
+        Log.e("ULink", "Failed to end session", error);
+        return null;
+    });
+```
+
+### 7. Deferred Deep Links
+
+Deferred deep links are checked automatically on first launch when `autoCheckDeferredLink = true`. For manual control:
+
+```kotlin
+// Manually check for deferred deep links
+ulink.checkDeferredLink()
+
+// The result will be emitted to dynamicLinkStream
+```
+
+### 8. Debug Logging
+
+Enable debug mode and listen to SDK logs:
+
+**Kotlin:**
+
+```kotlin
+// Enable debug mode in config
+val config = ULinkConfig(
+    apiKey = "your-api-key",
+    debug = true // Enable debug logging
+)
+
+// Listen to log stream
+lifecycleScope.launch {
+    ulink.logStream.collect { entry ->
+        println("[${entry.level}] ${entry.tag}: ${entry.message}")
+    }
+}
+```
+
+**Java:**
+
+```java
+ulink.setOnLogListener(entry -> {
+    Log.d("ULink", "[" + entry.getLevel() + "] " + entry.getMessage());
+});
 ```
 
 ## API Reference
@@ -266,25 +524,87 @@ val currentSessionId = ulink.getCurrentSessionId()
 
 The main class for interacting with the ULink SDK.
 
-#### Methods
+#### Initialization
 
-- `initialize(context: Context, config: ULinkConfig)`: Initialize the SDK
-- `getInstance(): ULink`: Get the singleton instance
-- `createLink(parameters: ULinkParameters): ULinkResponse`: Create a dynamic or unified link
-- `resolveLink(url: String): ULinkResolvedData?`: Resolve a ULink URL to extract data
-- `getInitialDeepLink(): ULinkResolvedData?`: Get the initial deep link that opened the app
-- `getInitialUri(): Uri?`: Get the raw initial URI
-- `getLastLinkData(): ULinkResolvedData?`: Get the last received link data
-- `startSession(metadata: Map<String, Any>? = null): ULinkSessionResponse`: Start a new session
-- `endSession()`: End the current session
-- `hasActiveSession(): Boolean`: Check if there's an active session
-- `getCurrentSessionId(): String?`: Get the current session ID
-- `dispose()`: Clean up resources
+| Method | Description |
+|--------|-------------|
+| `initialize(context, config)` | Initialize the SDK (Kotlin) |
+| `initializeAsync(context, config)` | Initialize the SDK (Java CompletableFuture) |
+| `initialize(context, config, onSuccess, onError)` | Initialize with callbacks (Java) |
+| `getInstance()` | Get the singleton instance |
 
-#### Properties
+#### Link Operations
 
-- `deepLinkStream: Flow<ULinkResolvedData?>`: Stream of deep link events
-- `unifiedLinkStream: Flow<ULinkResolvedData?>`: Stream of unified link events
+| Method | Description |
+|--------|-------------|
+| `createLink(parameters): ULinkResponse` | Create a dynamic or unified link (suspend) |
+| `createLinkAsync(parameters)` | Create link (CompletableFuture) |
+| `createLink(parameters, onSuccess, onError)` | Create link with callbacks |
+| `resolveLink(url): ULinkResponse` | Resolve a ULink URL (suspend) |
+| `resolveLinkAsync(url)` | Resolve link (CompletableFuture) |
+| `resolveLink(url, onSuccess, onError)` | Resolve link with callbacks |
+| `handleDeepLink(uri, isDeferred, matchType)` | Manually handle a deep link URI |
+| `processULinkUri(uri): ULinkResolvedData?` | Process URI without emitting to streams |
+| `checkDeferredLink()` | Manually check for deferred deep links |
+
+#### Deep Link Data
+
+| Method | Description |
+|--------|-------------|
+| `getInitialDeepLink(): ULinkResolvedData?` | Get the initial deep link that opened the app |
+| `getInitialUri(): Uri?` | Get the raw initial URI |
+| `getLastLinkData(): ULinkResolvedData?` | Get the last received link data |
+| `setInitialUri(uri)` | Set the initial URI manually |
+
+#### Installation & Reinstall
+
+| Method | Description |
+|--------|-------------|
+| `getInstallationId(): String?` | Get the unique installation ID |
+| `getInstallationInfo(): ULinkInstallationInfo?` | Get full installation info |
+| `isReinstall(): Boolean` | Check if this is a reinstall |
+| `getPersistentDeviceId(): String?` | Get the persistent device ID |
+
+#### Session Management
+
+| Method | Description |
+|--------|-------------|
+| `endSession(): Boolean` | End the current session (suspend) |
+| `endSessionAsync()` | End session (CompletableFuture) |
+| `endSession(onSuccess, onError)` | End session with callbacks |
+| `hasActiveSession(): Boolean` | Check if there's an active session |
+| `getCurrentSessionId(): String?` | Get the current session ID |
+| `getSessionState(): SessionState` | Get session state (INITIALIZING, ACTIVE, ENDED, ERROR) |
+| `isSessionInitializing(): Boolean` | Check if session is initializing |
+
+#### Listeners (Java-friendly)
+
+| Method | Description |
+|--------|-------------|
+| `setOnLinkListener(listener)` | Set dynamic link listener |
+| `setOnUnifiedLinkListener(listener)` | Set unified link listener |
+| `setOnReinstallListener(listener)` | Set reinstall detection listener |
+| `setOnLogListener(listener)` | Set log listener |
+| `removeOnLinkListener()` | Remove dynamic link listener |
+| `removeOnUnifiedLinkListener()` | Remove unified link listener |
+| `removeOnReinstallListener()` | Remove reinstall listener |
+| `removeOnLogListener()` | Remove log listener |
+| `removeAllListeners()` | Remove all listeners |
+
+#### Cleanup
+
+| Method | Description |
+|--------|-------------|
+| `dispose()` | Clean up resources |
+
+#### Streams (Kotlin Flows)
+
+| Property | Description |
+|----------|-------------|
+| `dynamicLinkStream` / `onLink` | Stream of dynamic link events |
+| `unifiedLinkStream` / `onUnifiedLink` | Stream of unified link events |
+| `onReinstallDetected` | Stream of reinstall detection events |
+| `logStream` | Stream of SDK log entries |
 
 ### Data Classes
 
@@ -294,7 +614,14 @@ The main class for interacting with the ULink SDK.
 data class ULinkConfig(
     val apiKey: String,
     val baseUrl: String = "https://api.ulink.ly",
-    val debug: Boolean = false
+    val debug: Boolean = false,
+    val enableDeepLinkIntegration: Boolean = true,
+    val persistLastLinkData: Boolean = true,
+    val lastLinkTimeToLiveSeconds: Long = 86400, // 24 hours
+    val clearLastLinkOnRead: Boolean = false,
+    val redactAllParametersInLastLink: Boolean = false,
+    val redactedParameterKeysInLastLink: List<String> = emptyList(),
+    val autoCheckDeferredLink: Boolean = true
 )
 ```
 
@@ -340,6 +667,40 @@ data class ULinkResolvedData(
 )
 ```
 
+#### ULinkInstallationInfo
+
+```kotlin
+data class ULinkInstallationInfo(
+    val installationId: String,
+    val isReinstall: Boolean = false,
+    val previousInstallationId: String? = null,
+    val reinstallDetectedAt: String? = null,
+    val persistentDeviceId: String? = null
+)
+```
+
+#### ULinkLogEntry
+
+```kotlin
+data class ULinkLogEntry(
+    val level: String, // "debug", "info", "warning", "error"
+    val tag: String,
+    val message: String,
+    val timestamp: Long
+)
+```
+
+#### SessionState
+
+```kotlin
+enum class SessionState {
+    INITIALIZING,
+    ACTIVE,
+    ENDED,
+    ERROR
+}
+```
+
 ## Advanced Usage
 
 ### Custom Deep Link Handling
@@ -350,8 +711,9 @@ override fun onNewIntent(intent: Intent?) {
     super.onNewIntent(intent)
     intent?.data?.let { uri ->
         lifecycleScope.launch {
-            val resolvedData = ulink.resolveLink(uri.toString())
+            val resolvedData = ulink.processULinkUri(uri)
             resolvedData?.let {
+                // Handle without emitting to streams
                 handleDeepLink(it)
             }
         }
@@ -385,11 +747,17 @@ lifecycleScope.launch {
 }
 ```
 
-### Testing
+### Link Data Persistence Options
 
 ```kotlin
-// For testing, you can create a test instance
-val testULink = ULink.createTestInstance(config)
+val config = ULinkConfig(
+    apiKey = "your-api-key",
+    persistLastLinkData = true,           // Persist last link for later retrieval
+    lastLinkTimeToLiveSeconds = 3600,     // TTL: 1 hour
+    clearLastLinkOnRead = true,           // Clear after first read
+    redactAllParametersInLastLink = false, // Keep parameters
+    redactedParameterKeysInLastLink = listOf("password", "token") // Redact sensitive keys
+)
 ```
 
 ## Requirements
@@ -406,6 +774,7 @@ The SDK uses the following dependencies:
 - AndroidX Lifecycle
 - Kotlin Coroutines
 - Kotlinx Serialization
+- Google Play Install Referrer
 
 ## License
 
