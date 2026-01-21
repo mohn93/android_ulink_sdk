@@ -16,6 +16,8 @@ class ULinkInitializationError(
         /**
          * Creates an error for bootstrap failures
          */
+        @JvmStatic
+        @JvmOverloads
         fun bootstrapFailed(statusCode: Int, message: String, cause: Throwable? = null): ULinkInitializationError {
             return ULinkInitializationError(
                 statusCode = statusCode,
@@ -23,10 +25,12 @@ class ULinkInitializationError(
                 cause = cause
             )
         }
-        
+
         /**
          * Creates an error for deep link resolution failures
          */
+        @JvmStatic
+        @JvmOverloads
         fun deepLinkResolutionFailed(statusCode: Int, message: String, cause: Throwable? = null): ULinkInitializationError {
             return ULinkInitializationError(
                 statusCode = statusCode,
@@ -34,10 +38,12 @@ class ULinkInitializationError(
                 cause = cause
             )
         }
-        
+
         /**
          * Creates an error for deferred link check failures
          */
+        @JvmStatic
+        @JvmOverloads
         fun deferredLinkFailed(statusCode: Int, message: String, cause: Throwable? = null): ULinkInitializationError {
             return ULinkInitializationError(
                 statusCode = statusCode,
@@ -45,10 +51,12 @@ class ULinkInitializationError(
                 cause = cause
             )
         }
-        
+
         /**
          * Creates an error for last link data load failures
          */
+        @JvmStatic
+        @JvmOverloads
         fun lastLinkDataLoadFailed(message: String, cause: Throwable? = null): ULinkInitializationError {
             return ULinkInitializationError(
                 statusCode = 0,

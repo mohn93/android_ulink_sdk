@@ -37,6 +37,8 @@ data class ULinkResponse(
         /**
          * Creates a successful response
          */
+        @JvmStatic
+        @JvmOverloads
         fun success(url: String, data: JsonObject? = null): ULinkResponse {
             return ULinkResponse(
                 success = true,
@@ -44,10 +46,12 @@ data class ULinkResponse(
                 data = data
             )
         }
-        
+
         /**
          * Creates an error response
          */
+        @JvmStatic
+        @JvmOverloads
         fun error(message: String, data: JsonObject? = null): ULinkResponse {
             return ULinkResponse(
                 success = false,
@@ -55,10 +59,11 @@ data class ULinkResponse(
                 data = data
             )
         }
-        
+
         /**
          * Creates a response from JSON
          */
+        @JvmStatic
         fun fromJson(jsonString: String): ULinkResponse {
             return try {
                 val json = Json.parseToJsonElement(jsonString).jsonObject

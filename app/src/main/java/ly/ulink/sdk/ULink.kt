@@ -102,7 +102,8 @@ class ULink private constructor(
         @Volatile
         private var isInitializing = false
         private val initLock = Any()
-        
+
+        @JvmStatic
         suspend fun initialize(
             context: Context,
             config: ULinkConfig,
@@ -154,20 +155,131 @@ class ULink private constructor(
             }
         }
 
+        @JvmStatic
         fun createTestInstance(context: Context, config: ULinkConfig, httpClient: HttpClient): ULink {
             return runBlocking {
                 initialize(context, config, httpClient)
             }
         }
-        
+
         /**
          * Get the singleton instance
          * @throws IllegalStateException if the SDK is not initialized
          */
+        @JvmStatic
         fun getInstance(): ULink {
             return INSTANCE ?: throw IllegalStateException(
                 "ULink SDK not initialized. Call ULink.initialize() first."
             )
+        }
+
+        /**
+         * Java-friendly async initialization method.
+         * Returns a CompletableFuture that completes with the initialized ULink instance.
+         *
+         * This is the recommended way to initialize the SDK from Java code.
+         *
+         * Example usage in Java:
+         * ```java
+         * ULinkConfig config = new ULinkConfig(
+         *     "your-api-key",
+         *     "https://api.ulink.ly",
+         *     true,  // debug
+         *     true,  // enableDeepLinkIntegration
+         *     true,  // autoCheckDeferredLink
+         *     false  // persistLastLinkData
+         * );
+         *
+         * ULink.initializeAsync(context, config)
+         *     .thenAccept(ulink -> {
+         *         Log.d("ULink", "SDK initialized successfully");
+         *         // SDK is ready to use
+         *     })
+         *     .exceptionally(error -> {
+         *         Log.e("ULink", "Failed to initialize SDK", error);
+         *         return null;
+         *     });
+         * ```
+         *
+         * @param context The application context
+         * @param config The SDK configuration
+         * @param httpClient Optional HTTP client for testing (can be null)
+         * @return CompletableFuture that completes with the initialized ULink instance
+         */
+        @JvmStatic
+        @JvmOverloads
+        fun initializeAsync(
+            context: Context,
+            config: ULinkConfig,
+            httpClient: HttpClient? = null
+        ): java.util.concurrent.CompletableFuture<ULink> {
+            val future = java.util.concurrent.CompletableFuture<ULink>()
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                try {
+                    val instance = initialize(context, config, httpClient)
+                    future.complete(instance)
+                } catch (e: Exception) {
+                    future.completeExceptionally(e)
+                }
+            }
+            return future
+        }
+
+        /**
+         * Initialize SDK with callbacks (Java-friendly).
+         * Alternative to [initializeAsync] for developers who prefer callbacks.
+         *
+         * **Threading:** Both callbacks are invoked on the main (UI) thread.
+         *
+         * **Error Handling:** If [onError] is not provided and initialization fails,
+         * the exception will be re-thrown. Always provide an error callback in production.
+         *
+         * Example usage in Java:
+         * ```java
+         * ULinkConfig config = new ULinkConfig(
+         *     "your-api-key",
+         *     "https://api.ulink.ly",
+         *     true,  // debug
+         *     true,  // enableDeepLinkIntegration
+         *     true,  // autoCheckDeferredLink
+         *     false  // persistLastLinkData
+         * );
+         *
+         * ULink.initialize(context, config,
+         *     ulink -> {
+         *         Log.d("ULink", "SDK initialized successfully");
+         *         // SDK is ready to use
+         *     },
+         *     error -> {
+         *         Log.e("ULink", "Failed to initialize SDK", error);
+         *     }
+         * );
+         * ```
+         *
+         * @param context Application context
+         * @param config SDK configuration
+         * @param onSuccess Callback invoked on main thread when initialization succeeds
+         * @param onError Optional callback invoked on main thread when initialization fails.
+         *                If null and an error occurs, the exception is re-thrown.
+         * @see initializeAsync
+         * @see initialize
+         */
+        @JvmStatic
+        @JvmOverloads
+        fun initialize(
+            context: Context,
+            config: ULinkConfig,
+            onSuccess: (ULink) -> Unit,
+            onError: ((Throwable) -> Unit)? = null
+        ) {
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                try {
+                    val instance = initialize(context, config)
+                    onSuccess(instance)
+                } catch (e: Exception) {
+                    onError?.invoke(e) ?: throw e
+                }
+            }
         }
     }
     
@@ -232,7 +344,258 @@ class ULink private constructor(
      * Only emits when debug mode is enabled
      */
     val logStream: SharedFlow<ULinkLogEntry> = _logStream.asSharedFlow()
-    
+
+    // ========== JAVA-FRIENDLY LISTENER SUPPORT ==========
+
+    // Listener variables for Java compatibility
+    private var onLinkListener: ly.ulink.sdk.listeners.OnLinkListener? = null
+    private var onUnifiedLinkListener: ly.ulink.sdk.listeners.OnUnifiedLinkListener? = null
+    private var onReinstallListener: ly.ulink.sdk.listeners.OnReinstallListener? = null
+    private var onLogListener: ly.ulink.sdk.listeners.OnLogListener? = null
+
+    // Individual listener jobs for proper cleanup
+    private var onLinkListenerJob: kotlinx.coroutines.Job? = null
+    private var onUnifiedLinkListenerJob: kotlinx.coroutines.Job? = null
+    private var onReinstallListenerJob: kotlinx.coroutines.Job? = null
+    private var onLogListenerJob: kotlinx.coroutines.Job? = null
+
+    // Legacy list for backward compatibility in dispose()
+    private val listenerJobs = mutableListOf<kotlinx.coroutines.Job>()
+
+    /**
+     * Set a listener for dynamic link events (Java-friendly alternative to dynamicLinkStream).
+     *
+     * This method provides a simple callback-based API for Java developers to receive
+     * deep link resolution events without needing to work with Kotlin Flows.
+     *
+     * **Threading:** Listener callbacks are invoked on the main (UI) thread.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.setOnLinkListener(data -> {
+     *     Log.d("ULink", "Link received: " + data.getSlug());
+     *     // Handle navigation based on data
+     * });
+     * ```
+     *
+     * @param listener The listener to receive link events, or null to remove the listener
+     * @see removeOnLinkListener
+     * @see dynamicLinkStream
+     */
+    fun setOnLinkListener(listener: ly.ulink.sdk.listeners.OnLinkListener?) {
+        // Cancel previous listener job
+        onLinkListenerJob?.cancel()
+        onLinkListenerJob = null
+        onLinkListener = listener
+
+        if (listener != null) {
+            val job = scope.launch {
+                dynamicLinkStream.collect { data ->
+                    listener.onLinkReceived(data)
+                }
+            }
+            onLinkListenerJob = job
+            listenerJobs.add(job)
+        }
+    }
+
+    /**
+     * Remove the currently registered dynamic link listener.
+     *
+     * Example usage in Java:
+     * ```java
+     * // In onDestroy or when cleaning up
+     * ulink.removeOnLinkListener();
+     * ```
+     *
+     * @see setOnLinkListener
+     */
+    fun removeOnLinkListener() {
+        setOnLinkListener(null)
+    }
+
+    /**
+     * Set a listener for unified link events (Java-friendly alternative to unifiedLinkStream).
+     *
+     * Unified links are platform-specific redirects designed for "open in browser" scenarios.
+     *
+     * **Threading:** Listener callbacks are invoked on the main (UI) thread.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.setOnUnifiedLinkListener(data -> {
+     *     Log.d("ULink", "Unified link: " + data.getSlug());
+     *     // Optionally open in browser or handle in-app
+     * });
+     * ```
+     *
+     * @param listener The listener to receive unified link events, or null to remove the listener
+     * @see removeOnUnifiedLinkListener
+     * @see unifiedLinkStream
+     */
+    fun setOnUnifiedLinkListener(listener: ly.ulink.sdk.listeners.OnUnifiedLinkListener?) {
+        // Cancel previous listener job
+        onUnifiedLinkListenerJob?.cancel()
+        onUnifiedLinkListenerJob = null
+        onUnifiedLinkListener = listener
+
+        if (listener != null) {
+            val job = scope.launch {
+                unifiedLinkStream.collect { data ->
+                    listener.onUnifiedLinkReceived(data)
+                }
+            }
+            onUnifiedLinkListenerJob = job
+            listenerJobs.add(job)
+        }
+    }
+
+    /**
+     * Remove the currently registered unified link listener.
+     *
+     * Example usage in Java:
+     * ```java
+     * // In onDestroy or when cleaning up
+     * ulink.removeOnUnifiedLinkListener();
+     * ```
+     *
+     * @see setOnUnifiedLinkListener
+     */
+    fun removeOnUnifiedLinkListener() {
+        setOnUnifiedLinkListener(null)
+    }
+
+    /**
+     * Set a listener for reinstall detection events.
+     *
+     * This listener is triggered when the SDK detects that the app was previously installed.
+     *
+     * **Threading:** Listener callbacks are invoked on the main (UI) thread.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.setOnReinstallListener(info -> {
+     *     Log.d("ULink", "Reinstall detected!");
+     *     // Track reinstall event in analytics
+     * });
+     * ```
+     *
+     * @param listener The listener to receive reinstall events, or null to remove the listener
+     * @see removeOnReinstallListener
+     * @see onReinstallDetected
+     */
+    fun setOnReinstallListener(listener: ly.ulink.sdk.listeners.OnReinstallListener?) {
+        // Cancel previous listener job
+        onReinstallListenerJob?.cancel()
+        onReinstallListenerJob = null
+        onReinstallListener = listener
+
+        if (listener != null) {
+            val job = scope.launch {
+                onReinstallDetected.collect { info ->
+                    listener.onReinstallDetected(info)
+                }
+            }
+            onReinstallListenerJob = job
+            listenerJobs.add(job)
+        }
+    }
+
+    /**
+     * Remove the currently registered reinstall detection listener.
+     *
+     * Example usage in Java:
+     * ```java
+     * // In onDestroy or when cleaning up
+     * ulink.removeOnReinstallListener();
+     * ```
+     *
+     * @see setOnReinstallListener
+     */
+    fun removeOnReinstallListener() {
+        setOnReinstallListener(null)
+    }
+
+    /**
+     * Set a listener for SDK log events (only active when debug mode is enabled).
+     *
+     * This provides access to internal SDK log messages for debugging purposes.
+     *
+     * **Threading:** Listener callbacks are invoked on the main (UI) thread.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.setOnLogListener(entry -> {
+     *     Log.d("ULink", entry.getMessage());
+     *     // Forward to your logging system
+     * });
+     * ```
+     *
+     * @param listener The listener to receive log events, or null to remove the listener
+     * @see removeOnLogListener
+     * @see logStream
+     */
+    fun setOnLogListener(listener: ly.ulink.sdk.listeners.OnLogListener?) {
+        // Cancel previous listener job
+        onLogListenerJob?.cancel()
+        onLogListenerJob = null
+        onLogListener = listener
+
+        if (listener != null) {
+            val job = scope.launch {
+                logStream.collect { entry ->
+                    listener.onLog(entry)
+                }
+            }
+            onLogListenerJob = job
+            listenerJobs.add(job)
+        }
+    }
+
+    /**
+     * Remove the currently registered log listener.
+     *
+     * Example usage in Java:
+     * ```java
+     * // In onDestroy or when cleaning up
+     * ulink.removeOnLogListener();
+     * ```
+     *
+     * @see setOnLogListener
+     */
+    fun removeOnLogListener() {
+        setOnLogListener(null)
+    }
+
+    /**
+     * Remove all registered listeners.
+     *
+     * Call this method to clean up all listener registrations at once,
+     * typically in your Activity's onDestroy or when the SDK is no longer needed.
+     *
+     * Example usage in Java:
+     * ```java
+     * @Override
+     * protected void onDestroy() {
+     *     super.onDestroy();
+     *     ulink.removeAllListeners();
+     * }
+     * ```
+     *
+     * @see removeOnLinkListener
+     * @see removeOnUnifiedLinkListener
+     * @see removeOnReinstallListener
+     * @see removeOnLogListener
+     */
+    fun removeAllListeners() {
+        removeOnLinkListener()
+        removeOnUnifiedLinkListener()
+        removeOnReinstallListener()
+        removeOnLogListener()
+    }
+
+    // ========== END OF LISTENER SUPPORT ==========
+
     // Initial deep link data
     private var initialUri: Uri? = null
     private var lastLinkData: ULinkResolvedData? = null
@@ -1592,22 +1955,335 @@ class ULink private constructor(
             }
         }
     }
-    
+
+    // ========== JAVA-FRIENDLY COMPLETABLE FUTURE WRAPPERS ==========
+
+    /**
+     * Java-friendly async method for creating links.
+     * Returns a CompletableFuture that completes with the link creation response.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.createLinkAsync(parameters)
+     *     .thenAccept(response -> {
+     *         if (response.getSuccess()) {
+     *             String url = response.getUrl();
+     *             // Use the URL
+     *         }
+     *     })
+     *     .exceptionally(error -> {
+     *         Log.e("ULink", "Failed to create link", error);
+     *         return null;
+     *     });
+     * ```
+     *
+     * @param parameters The link parameters
+     * @return CompletableFuture that completes with ULinkResponse
+     */
+    fun createLinkAsync(parameters: ULinkParameters): java.util.concurrent.CompletableFuture<ULinkResponse> {
+        val future = java.util.concurrent.CompletableFuture<ULinkResponse>()
+        scope.launch {
+            try {
+                val response = createLink(parameters)
+                future.complete(response)
+            } catch (e: Exception) {
+                future.completeExceptionally(e)
+            }
+        }
+        return future
+    }
+
+    /**
+     * Java-friendly async method for resolving links.
+     * Returns a CompletableFuture that completes with the link resolution response.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.resolveLinkAsync("https://links.shared.ly/my-link")
+     *     .thenAccept(response -> {
+     *         if (response.getSuccess()) {
+     *             // Handle resolved link data
+     *         }
+     *     });
+     * ```
+     *
+     * @param url The URL to resolve
+     * @return CompletableFuture that completes with ULinkResponse
+     */
+    fun resolveLinkAsync(url: String): java.util.concurrent.CompletableFuture<ULinkResponse> {
+        val future = java.util.concurrent.CompletableFuture<ULinkResponse>()
+        scope.launch {
+            try {
+                val response = resolveLink(url)
+                future.complete(response)
+            } catch (e: Exception) {
+                future.completeExceptionally(e)
+            }
+        }
+        return future
+    }
+
+    /**
+     * Java-friendly async method for ending the current session.
+     * Returns a CompletableFuture that completes with a boolean indicating success.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.endSessionAsync()
+     *     .thenAccept(success -> {
+     *         if (success) {
+     *             Log.d("ULink", "Session ended successfully");
+     *         }
+     *     });
+     * ```
+     *
+     * @return CompletableFuture that completes with Boolean
+     */
+    fun endSessionAsync(): java.util.concurrent.CompletableFuture<Boolean> {
+        val future = java.util.concurrent.CompletableFuture<Boolean>()
+        scope.launch {
+            try {
+                val success = endSession()
+                future.complete(success)
+            } catch (e: Exception) {
+                future.completeExceptionally(e)
+            }
+        }
+        return future
+    }
+
+    /**
+     * Java-friendly async method for getting initial deep link.
+     * Returns a CompletableFuture that completes with the initial deep link data (if any).
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.getInitialDeepLinkAsync()
+     *     .thenAccept(data -> {
+     *         if (data != null) {
+     *             Log.d("ULink", "Initial deep link: " + data.getSlug());
+     *         }
+     *     });
+     * ```
+     *
+     * @return CompletableFuture that completes with ULinkResolvedData or null
+     */
+    fun getInitialDeepLinkAsync(): java.util.concurrent.CompletableFuture<ULinkResolvedData?> {
+        val future = java.util.concurrent.CompletableFuture<ULinkResolvedData?>()
+        scope.launch {
+            try {
+                val data = getInitialDeepLink()
+                future.complete(data)
+            } catch (e: Exception) {
+                future.completeExceptionally(e)
+            }
+        }
+        return future
+    }
+
+    /**
+     * Java-friendly async method for processing ULink URI.
+     * Returns a CompletableFuture that completes with the resolved link data (if valid).
+     *
+     * Example usage in Java:
+     * ```java
+     * Uri uri = intent.getData();
+     * if (uri != null) {
+     *     ulink.processULinkUriAsync(uri)
+     *         .thenAccept(data -> {
+     *             if (data != null) {
+     *                 // Handle resolved link
+     *             }
+     *         });
+     * }
+     * ```
+     *
+     * @param uri The URI to process
+     * @return CompletableFuture that completes with ULinkResolvedData or null
+     */
+    fun processULinkUriAsync(uri: android.net.Uri): java.util.concurrent.CompletableFuture<ULinkResolvedData?> {
+        val future = java.util.concurrent.CompletableFuture<ULinkResolvedData?>()
+        scope.launch {
+            try {
+                val data = processULinkUri(uri)
+                future.complete(data)
+            } catch (e: Exception) {
+                future.completeExceptionally(e)
+            }
+        }
+        return future
+    }
+
+    // ========== END OF JAVA-FRIENDLY WRAPPERS ==========
+
+    // ========== CALLBACK-BASED METHODS FOR JAVA ==========
+
+    /**
+     * Create link with callbacks (Java-friendly).
+     * Alternative to [createLinkAsync] for developers who prefer callbacks.
+     *
+     * **Threading:** Both callbacks are invoked on the main (UI) thread.
+     *
+     * **Error Handling:** If [onError] is not provided and an error occurs,
+     * the error is logged but not thrown. Provide an error callback for explicit handling.
+     *
+     * Example usage in Java:
+     * ```java
+     * ULinkParameters params = ULinkParameters.dynamic(
+     *     "links.shared.ly",
+     *     "my-slug",
+     *     null, null, "https://example.com",
+     *     null, null, null
+     * );
+     *
+     * ulink.createLink(params,
+     *     response -> {
+     *         if (response.getSuccess()) {
+     *             String url = response.getUrl();
+     *             Log.d("ULink", "Link created: " + url);
+     *         }
+     *     },
+     *     error -> {
+     *         Log.e("ULink", "Error creating link", error);
+     *     }
+     * );
+     * ```
+     *
+     * @param parameters Link creation parameters
+     * @param onSuccess Callback invoked on main thread with link creation response
+     * @param onError Optional callback invoked on main thread when an error occurs.
+     *                If null, errors are logged to the SDK log stream.
+     * @see createLinkAsync
+     * @see createLink
+     */
+    @JvmOverloads
+    fun createLink(
+        parameters: ULinkParameters,
+        onSuccess: (ULinkResponse) -> Unit,
+        onError: ((Throwable) -> Unit)? = null
+    ) {
+        scope.launch {
+            try {
+                val response = createLink(parameters)
+                onSuccess(response)
+            } catch (e: Exception) {
+                onError?.invoke(e) ?: logError("Error creating link: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Resolve link with callbacks (Java-friendly).
+     * Alternative to [resolveLinkAsync] for developers who prefer callbacks.
+     *
+     * **Threading:** Both callbacks are invoked on the main (UI) thread.
+     *
+     * **Error Handling:** If [onError] is not provided and an error occurs,
+     * the error is logged but not thrown. Provide an error callback for explicit handling.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.resolveLink("https://links.shared.ly/my-link",
+     *     response -> {
+     *         if (response.getSuccess()) {
+     *             Log.d("ULink", "Link resolved successfully");
+     *         }
+     *     },
+     *     error -> {
+     *         Log.e("ULink", "Error resolving link", error);
+     *     }
+     * );
+     * ```
+     *
+     * @param url URL to resolve
+     * @param onSuccess Callback invoked on main thread with resolution response
+     * @param onError Optional callback invoked on main thread when an error occurs.
+     *                If null, errors are logged to the SDK log stream.
+     * @see resolveLinkAsync
+     * @see resolveLink
+     */
+    @JvmOverloads
+    fun resolveLink(
+        url: String,
+        onSuccess: (ULinkResponse) -> Unit,
+        onError: ((Throwable) -> Unit)? = null
+    ) {
+        scope.launch {
+            try {
+                val response = resolveLink(url)
+                onSuccess(response)
+            } catch (e: Exception) {
+                onError?.invoke(e) ?: logError("Error resolving link: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * End session with callback (Java-friendly).
+     * Alternative to [endSessionAsync] for developers who prefer callbacks.
+     *
+     * **Threading:** Both callbacks are invoked on the main (UI) thread.
+     *
+     * **Error Handling:** If [onError] is not provided and an error occurs,
+     * the error is logged but not thrown. Provide an error callback for explicit handling.
+     *
+     * Example usage in Java:
+     * ```java
+     * ulink.endSession(
+     *     success -> {
+     *         if (success) {
+     *             Log.d("ULink", "Session ended successfully");
+     *         }
+     *     },
+     *     error -> {
+     *         Log.e("ULink", "Error ending session", error);
+     *     }
+     * );
+     * ```
+     *
+     * @param onSuccess Callback invoked on main thread when session ends
+     * @param onError Optional callback invoked on main thread when an error occurs.
+     *                If null, errors are logged to the SDK log stream.
+     * @see endSessionAsync
+     * @see endSession
+     */
+    @JvmOverloads
+    fun endSession(
+        onSuccess: (Boolean) -> Unit,
+        onError: ((Throwable) -> Unit)? = null
+    ) {
+        scope.launch {
+            try {
+                val success = endSession()
+                onSuccess(success)
+            } catch (e: Exception) {
+                onError?.invoke(e) ?: logError("Error ending session: ${e.message}")
+            }
+        }
+    }
+
+    // ========== END OF CALLBACK-BASED METHODS ==========
+
     /**
      * Disposes the SDK and cleans up resources
      */
     fun dispose() {
+        // Clean up listener jobs
+        listenerJobs.forEach { it.cancel() }
+        listenerJobs.clear()
+
+        // End session and cancel scope
         scope.launch {
             endSession()
         }
         scope.cancel()
         ProcessLifecycleOwner.get().lifecycle.removeObserver(this)
-        
+
         // Unregister activity lifecycle callbacks
         if (config.enableDeepLinkIntegration) {
             (context.applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(this)
         }
-        
+
         if (config.debug) {
             logInfo("ULink SDK disposed")
         }

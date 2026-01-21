@@ -25,20 +25,24 @@ enum class ULinkType {
 }
 
 /**
- * Social media tags for Open Graph metadata
+ * Social media tags for customizing link appearance when shared (Open Graph metadata).
+ *
+ * @param ogTitle The title to be displayed when shared on social media
+ * @param ogDescription The description to be displayed when shared on social media
+ * @param ogImage The image URL to be displayed when shared on social media
  */
 @Serializable
-data class SocialMediaTags(
+data class SocialMediaTags @JvmOverloads constructor(
     /**
      * The title to be displayed when shared on social media
      */
     val ogTitle: String? = null,
-    
+
     /**
      * The description to be displayed when shared on social media
      */
     val ogDescription: String? = null,
-    
+
     /**
      * The image URL to be displayed when shared on social media
      */
@@ -124,6 +128,8 @@ data class ULinkParameters(
          * Factory method for creating dynamic links
          * Dynamic links are designed for in-app deep linking with parameters and smart app store redirects
          */
+        @JvmStatic
+        @JvmOverloads
         fun dynamic(
             domain: String,
             slug: String? = null,
@@ -173,6 +179,8 @@ data class ULinkParameters(
          * Factory method for creating unified links
          * Unified links are simple platform-based redirects intended for browser handling
          */
+        @JvmStatic
+        @JvmOverloads
         fun unified(
             domain: String,
             slug: String? = null,

@@ -37,24 +37,28 @@ class ModelsTest {
     fun `test ULinkParameters creation for dynamic link`() {
         val metadata = mapOf("key1" to "value1", "key2" to "value2")
         val parameters = ULinkParameters.dynamic(
+            domain = "test.ly",
             fallbackUrl = "https://example.com",
             metadata = metadata
         )
 
         assertEquals("dynamic", parameters.type)
         assertEquals("https://example.com", parameters.fallbackUrl)
+        assertEquals("test.ly", parameters.domain)
         assertNotNull(parameters.metadata)
     }
 
     @Test
     fun `test ULinkParameters creation for unified link`() {
         val parameters = ULinkParameters.unified(
+            domain = "test.ly",
             iosUrl = "https://apps.apple.com/app/test",
             androidUrl = "https://play.google.com/store/apps/details?id=com.test",
             fallbackUrl = "https://example.com/desktop"
         )
 
         assertEquals("unified", parameters.type)
+        assertEquals("test.ly", parameters.domain)
         assertEquals("https://apps.apple.com/app/test", parameters.iosUrl)
         assertEquals("https://play.google.com/store/apps/details?id=com.test", parameters.androidUrl)
         assertEquals("https://example.com/desktop", parameters.fallbackUrl)
@@ -64,10 +68,12 @@ class ModelsTest {
     @Test
     fun `test ULinkParameters creation with minimal required fields`() {
         val parameters = ULinkParameters.dynamic(
+            domain = "test.ly",
             fallbackUrl = "https://example.com"
         )
 
         assertEquals("dynamic", parameters.type)
+        assertEquals("test.ly", parameters.domain)
         assertEquals("https://example.com", parameters.fallbackUrl)
         assertNull(parameters.metadata)
     }
@@ -121,11 +127,13 @@ class ModelsTest {
     @Test
     fun `test ULinkParameters with empty metadata`() {
         val parameters = ULinkParameters.dynamic(
+            domain = "test.ly",
             fallbackUrl = "https://example.com",
             metadata = emptyMap()
         )
 
         assertEquals("dynamic", parameters.type)
+        assertEquals("test.ly", parameters.domain)
         assertEquals("https://example.com", parameters.fallbackUrl)
         assertNotNull(parameters.metadata)
     }
@@ -142,11 +150,13 @@ class ModelsTest {
         )
 
         val parameters = ULinkParameters.dynamic(
+            domain = "test.ly",
             fallbackUrl = "https://example.com/product",
             metadata = metadata
         )
 
         assertEquals("dynamic", parameters.type)
+        assertEquals("test.ly", parameters.domain)
         assertEquals("https://example.com/product", parameters.fallbackUrl)
         assertNotNull(parameters.metadata)
     }

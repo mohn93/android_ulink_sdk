@@ -57,10 +57,19 @@ class ULinkIntegrationTest {
         )
         
         mockHttpClient = mockk(relaxed = true)
-        // Avoid background installation tracking crash
-        coEvery { mockHttpClient.postJson(match { it.contains("/installations/track") }, any(), any()) } returns HttpResponse(
+
+        // Mock all postJson calls for initialization (bootstrap, session, etc.)
+        coEvery { mockHttpClient.postJson(any(), any(), any()) } returns HttpResponse(
             statusCode = 200,
-            body = "{\"success\": true}",
+            body = """{"installationId":"test-123","token":"test-token","sessionId":"session-123","success":true}""",
+            isSuccess = true,
+            headers = mapOf("x-installation-token" to "test-token")
+        )
+
+        // Mock GET requests for link resolution
+        coEvery { mockHttpClient.get(any(), any()) } returns HttpResponse(
+            statusCode = 200,
+            body = """{"success":true,"url":"https://example.com"}""",
             isSuccess = true
         )
 
@@ -111,6 +120,7 @@ class ULinkIntegrationTest {
         
         // Step 1: Create a dynamic link
         val createParameters = ULinkParameters.dynamic(
+            domain = "ulink.ly",
             fallbackUrl = "https://example.com/product/123",
             metadata = mapOf(
                 "userId" to "user123",
@@ -137,46 +147,19 @@ class ULinkIntegrationTest {
     }
 
     @Test
-    fun `test complete session management workflow`() = runTest {
-        // Mock HTTP responses for session workflow
-        val startSessionResponse = HttpResponse(
-            isSuccess = true,
-            statusCode = 201,
-            body = """{"success": true, "sessionId": "session-integration-123"}"""
-        )
-        
-        val endSessionResponse = HttpResponse(
-            isSuccess = true,
-            statusCode = 200,
-            body = """{"success": true}"""
-        )
-        
-        coEvery { mockHttpClient.postJson(match { it.contains("/sessions") && !it.contains("/end") }, any(), any()) } returns startSessionResponse
-        coEvery { mockHttpClient.postJson(match { it.contains("/sessions/") && it.contains("/end") }, any(), any()) } returns endSessionResponse
-        
+    fun `test session management state methods`() = runTest {
+        // Session management is automatic via ProcessLifecycleOwner
+        // After initialization with sessionId in response, there's an active session
+
         // Ensure installation ID exists
         every { mockSharedPreferences.getString("installation_id", null) } returns "existing-id"
-        // Initially no active session
-        assertFalse("Should not have active session initially", ulink.hasActiveSession())
-        assertNull("Session ID should be null initially", ulink.getCurrentSessionId())
-        
-        // Step 1: Start a session
-        val sessionMetadata = mapOf(
-            "userId" to "integration-user-123",
-            "deviceType" to "mobile",
-            "appVersion" to "1.0.0"
-        )
-        
-        val startResult = ulink.startSession(sessionMetadata)
-        
-        assertTrue("Session start should succeed", startResult.success)
-        assertEquals("session-integration-123", startResult.sessionId)
-        assertTrue("Should have active session after start", ulink.hasActiveSession())
-        assertEquals("session-integration-123", ulink.getCurrentSessionId())
-        
-        // Step 2: End the session
+
+        // After initialization, session should be active
+        assertTrue("Should have active session after initialization", ulink.hasActiveSession())
+        assertNotNull("Session ID should exist after initialization", ulink.getCurrentSessionId())
+
+        // End the session
         val endResult = ulink.endSession()
-        
         assertTrue("Session end should succeed", endResult)
         assertFalse("Should not have active session after end", ulink.hasActiveSession())
         assertNull("Session ID should be null after end", ulink.getCurrentSessionId())
@@ -193,6 +176,7 @@ class ULinkIntegrationTest {
         coEvery { mockHttpClient.postJson(any(), any(), any()) } returns createLinkResponse
         
         val parameters = ULinkParameters.unified(
+            domain = "ulink.ly",
             iosUrl = "https://apps.apple.com/app/example-app/id123456789",
             androidUrl = "https://play.google.com/store/apps/details?id=com.example.app",
             fallbackUrl = "https://example.com/download"
@@ -219,25 +203,20 @@ class ULinkIntegrationTest {
         
         // Test link creation error
         val createParameters = ULinkParameters.dynamic(
+            domain = "ulink.ly",
             fallbackUrl = "invalid-url"
         )
-        
+
         val createResult = ulink.createLink(createParameters)
-        
+
         assertFalse("Link creation should fail with invalid URL", createResult.success)
         assertNotNull("Error message should be present", createResult.error)
-        
+
         // Test link resolution error
         val resolveResult = ulink.resolveLink("https://ulink.ly/nonexistent")
-        
+
         assertFalse("Link resolution should fail for nonexistent link", resolveResult.success)
         assertNotNull("Error message should be present", resolveResult.error)
-        
-        // Test session start error
-        val sessionResult = ulink.startSession()
-        
-        assertFalse("Session start should fail", sessionResult.success)
-        assertNotNull("Error message should be present", sessionResult.error)
     }
 
     @Test
@@ -285,6 +264,7 @@ class ULinkIntegrationTest {
         
         // Simulate concurrent operations
         val parameters = ULinkParameters.dynamic(
+            domain = "ulink.ly",
             fallbackUrl = "https://example.com/concurrent"
         )
         

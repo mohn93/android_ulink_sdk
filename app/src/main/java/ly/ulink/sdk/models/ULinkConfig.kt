@@ -1,9 +1,20 @@
 package ly.ulink.sdk.models
 
 /**
- * Configuration for the ULink SDK
+ * Configuration for the ULink SDK.
+ *
+ * @param apiKey The API key for the ULink service (required)
+ * @param baseUrl The base URL for the ULink API (default: "https://api.ulink.ly")
+ * @param debug Whether to enable debug logging (default: false)
+ * @param enableDeepLinkIntegration Whether to automatically handle deep links (default: true)
+ * @param persistLastLinkData Whether to persist the last resolved link (default: true)
+ * @param lastLinkTimeToLiveSeconds TTL for persisted links in seconds (default: 24 hours)
+ * @param clearLastLinkOnRead Whether to clear persisted link after first read (default: false)
+ * @param redactAllParametersInLastLink Whether to redact all params when persisting (default: false)
+ * @param redactedParameterKeysInLastLink Specific keys to redact (default: empty list)
+ * @param autoCheckDeferredLink Whether to auto-check deferred deep links (default: true)
  */
-data class ULinkConfig(
+data class ULinkConfig @JvmOverloads constructor(
     /**
      * The API key for the ULink service
      */

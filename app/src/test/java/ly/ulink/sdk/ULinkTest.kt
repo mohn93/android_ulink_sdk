@@ -58,10 +58,19 @@ class ULinkTest {
         
         // Mock HttpClient
         mockHttpClient = mockk(relaxed = true)
-        // Avoid background installation tracking crashing
-        coEvery { mockHttpClient.postJson(match { it.contains("/installations/track") }, any(), any()) } returns HttpResponse(
+
+        // Mock all postJson calls for initialization (bootstrap, session, etc.)
+        coEvery { mockHttpClient.postJson(any(), any(), any()) } returns HttpResponse(
             statusCode = 200,
-            body = "{\"success\": true}",
+            body = """{"installationId":"test-123","token":"test-token","sessionId":"session-123","success":true}""",
+            isSuccess = true,
+            headers = mapOf("x-installation-token" to "test-token")
+        )
+
+        // Mock GET requests for link resolution
+        coEvery { mockHttpClient.get(any(), any()) } returns HttpResponse(
+            statusCode = 200,
+            body = """{"success":true,"url":"https://example.com"}""",
             isSuccess = true
         )
 
@@ -110,6 +119,7 @@ class ULinkTest {
         coEvery { mockHttpClient.postJson(any(), any(), any()) } returns mockResponse
 
         val parameters = ULinkParameters.dynamic(
+            domain = "test.ly",
             fallbackUrl = "https://example.com",
             metadata = mapOf("key" to "value")
         )
@@ -133,6 +143,7 @@ class ULinkTest {
         coEvery { mockHttpClient.postJson(any(), any(), any()) } returns mockResponse
 
         val parameters = ULinkParameters.unified(
+            domain = "test.ly",
             iosUrl = "https://apps.apple.com/app/test",
             androidUrl = "https://play.google.com/store/apps/details?id=com.test",
             fallbackUrl = "https://example.com"
@@ -155,6 +166,7 @@ class ULinkTest {
         coEvery { mockHttpClient.postJson(any(), any(), any()) } returns mockResponse
 
         val parameters = ULinkParameters.dynamic(
+            domain = "test.ly",
             fallbackUrl = "invalid-url"
         )
 
@@ -181,52 +193,28 @@ class ULinkTest {
     }
 
     @Test
-    fun `test startSession success`() = runTest {
-        val mockResponse = HttpResponse(
-            isSuccess = true,
-            statusCode = 200,
-            body = """{"success": true, "sessionId": "session123"}"""
-        )
-        
-        coEvery { mockHttpClient.postJson(any(), any(), any()) } returns mockResponse
-        
-        // Ensure installation ID exists for session start
-        storedInstallationId = "existing-id"
-        val metadata = mapOf("userId" to "user123")
-        val result = ulink.startSession(metadata)
-        
-        assertTrue(result.success)
-        assertEquals("session123", result.sessionId)
+    fun `test session management methods available`() = runTest {
+        // Session management is automatic via ProcessLifecycleOwner
+        // After initialization with a valid response containing sessionId,
+        // there should be an active session
         assertTrue(ulink.hasActiveSession())
-        assertEquals("session123", ulink.getCurrentSessionId())
+        assertNotNull(ulink.getCurrentSessionId())
     }
 
     @Test
-    fun `test endSession success`() = runTest {
-        // Ensure installation ID exists then start a session
+    fun `test endSession clears active session`() = runTest {
+        // Test that endSession properly clears the session
+        // After initialization, there's an active session
         storedInstallationId = "existing-id"
-        val startResponse = HttpResponse(
-            isSuccess = true,
-            statusCode = 200,
-            body = """{"success": true, "sessionId": "session123"}"""
-        )
-        
-        val endResponse = HttpResponse(
-            isSuccess = true,
-            statusCode = 200,
-            body = """{"success": true}"""
-        )
-        
-        coEvery { mockHttpClient.postJson(match { it.contains("/sessions") && !it.contains("/end") }, any(), any()) } returns startResponse
-        coEvery { mockHttpClient.postJson(match { it.contains("/sessions/") && it.contains("/end") }, any(), any()) } returns endResponse
-        
-        // Start session first
-        ulink.startSession()
+
+        // Session exists after initialization
         assertTrue(ulink.hasActiveSession())
-        
-        // End session
+        assertNotNull(ulink.getCurrentSessionId())
+
+        // End the session
         val result = ulink.endSession()
-        
+
+        // Should succeed and clear the session
         assertTrue(result)
         assertFalse(ulink.hasActiveSession())
         assertNull(ulink.getCurrentSessionId())
@@ -269,8 +257,10 @@ class ULinkTest {
     }
 
     @Test
-    fun `test session management without active session`() {
-        assertFalse(ulink.hasActiveSession())
-        assertNull(ulink.getCurrentSessionId())
+    fun `test session state after initialization`() {
+        // After successful initialization with sessionId in response,
+        // there should be an active session
+        assertTrue(ulink.hasActiveSession())
+        assertNotNull(ulink.getCurrentSessionId())
     }
 }
