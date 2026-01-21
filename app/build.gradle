@@ -7,7 +7,7 @@ apply plugin: 'signing'
 
 
 group = "ly.ulink"         // your approved groupId
-version = "1.0.6"               // semver
+version = project.findProperty("version") ?: "1.0.6"  // semver, overridable via -Pversion=X.Y.Z
 
 android {
     namespace = "ly.ulink.sdk"
@@ -120,7 +120,7 @@ afterEvaluate {
                 
                 groupId = 'ly.ulink'
                 artifactId = 'ulink-sdk'
-                version = '1.0.6'
+                version = project.findProperty("version") ?: "1.0.6"
                 
                 // Only add artifacts if they're not already included by components.release
                 artifact(androidJavadocJar)
@@ -170,26 +170,38 @@ afterEvaluate {
     
     // Configure signing after publishing is set up
     signing {
-        def signingKeyId = project.findProperty("signing.keyId") ?: System.getenv("SIGNING_KEY_ID")
-        def signingPassword = project.findProperty("signing.password") ?: System.getenv("SIGNING_PASSWORD")
-        def signingSecretKeyFile = project.findProperty("signing.secretKeyFile") ?: System.getenv("SIGNING_SECRET_KEY_FILE")
-        
-        if (signingKeyId && signingPassword && signingSecretKeyFile) {
-            // Look for the key file in the current project directory first, then parent
-            def secretKeyFile = file(signingSecretKeyFile)
-            if (!secretKeyFile.exists()) {
-                secretKeyFile = file("../${signingSecretKeyFile}")
+        // Support both local (gradle.properties) and CI (environment variables) configurations
+        def signingKeyId = System.getenv("GPG_KEY_ID") ?: project.findProperty("signing.keyId")
+        def signingPassword = System.getenv("GPG_PASSPHRASE") ?: project.findProperty("signing.password")
+        def signingKey = System.getenv("GPG_PRIVATE_KEY")  // CI: key content from env var
+        def signingSecretKeyFile = project.findProperty("signing.secretKeyFile")  // Local: key file path
+
+        if (signingKeyId && signingPassword && (signingKey || signingSecretKeyFile)) {
+            def keyContent = signingKey
+
+            // If no key content from env var, read from file (local development)
+            if (!keyContent && signingSecretKeyFile) {
+                def secretKeyFile = file(signingSecretKeyFile)
+                if (!secretKeyFile.exists()) {
+                    secretKeyFile = file("../${signingSecretKeyFile}")
+                }
+
+                if (secretKeyFile.exists()) {
+                    println "Using signing key file: ${secretKeyFile.absolutePath}"
+                    keyContent = secretKeyFile.text
+                } else {
+                    println "Warning: Signing secret key file not found: ${signingSecretKeyFile}"
+                }
+            } else if (signingKey) {
+                println "Using signing key from environment variable"
             }
-            
-            if (secretKeyFile.exists()) {
-                println "Using signing key file: ${secretKeyFile.absolutePath}"
-                useInMemoryPgpKeys(signingKeyId, secretKeyFile.text, signingPassword)
+
+            if (keyContent) {
+                useInMemoryPgpKeys(signingKeyId, keyContent, signingPassword)
                 sign publishing.publications.maven
-            } else {
-                println "Warning: Signing secret key file not found: ${signingSecretKeyFile}"
             }
         } else {
-            println "Warning: Missing signing configuration - keyId: ${signingKeyId}, password: ${signingPassword ? 'set' : 'not set'}, keyFile: ${signingSecretKeyFile}"
+            println "Warning: Missing signing configuration - keyId: ${signingKeyId ? 'set' : 'not set'}, password: ${signingPassword ? 'set' : 'not set'}, key: ${(signingKey || signingSecretKeyFile) ? 'set' : 'not set'}"
         }
     }
     
