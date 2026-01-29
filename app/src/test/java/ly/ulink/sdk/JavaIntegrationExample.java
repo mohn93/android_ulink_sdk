@@ -96,6 +96,7 @@ public class JavaIntegrationExample {
         ULinkParameters minimalParams = ULinkParameters.dynamic(
             "links.shared.ly",              // domain (required)
             null,                           // slug (auto-generate)
+            null,                           // name
             null,                           // iosFallbackUrl
             null,                           // androidFallbackUrl
             "https://example.com/fallback"  // fallbackUrl
@@ -114,6 +115,7 @@ public class JavaIntegrationExample {
         ULinkParameters paramsWithMetadata = ULinkParameters.dynamic(
             "links.shared.ly",
             null,                           // auto-generate slug
+            null,                           // name
             "https://apps.apple.com/...",   // iOS fallback
             "https://play.google.com/...",  // Android fallback
             "https://example.com/profile",  // fallback URL
@@ -138,6 +140,7 @@ public class JavaIntegrationExample {
         ULinkParameters unifiedParams = ULinkParameters.unified(
             "links.shared.ly",
             "download-app",                            // slug
+            null,                                      // name
             "https://apps.apple.com/app/id123456",     // iOS URL
             "https://play.google.com/store/apps/...",  // Android URL
             "https://example.com/download"             // Fallback URL
@@ -174,7 +177,7 @@ public class JavaIntegrationExample {
         // Use in link parameters
         ULinkParameters paramsWithTags = ULinkParameters.dynamic(
             "links.shared.ly",
-            null, null, null,
+            null, null, null, null,
             "https://example.com",
             null,
             tags,
@@ -247,6 +250,7 @@ public class JavaIntegrationExample {
         ULinkParameters linkParams = ULinkParameters.dynamic(
             "links.shared.ly",
             null,  // Auto-generate slug
+            null,  // name
             "https://apps.apple.com/app/id123",
             "https://play.google.com/store/apps/details?id=com.example",
             "https://example.com/join",
@@ -277,7 +281,7 @@ public class JavaIntegrationExample {
         // Static factory methods work from Java
         ULinkParameters dynamicLink = ULinkParameters.dynamic(
             "test.ly",
-            null, null, null,
+            null, null, null, null,
             "https://example.com"
         );
         assertEquals("dynamic", dynamicLink.getType());
@@ -285,6 +289,7 @@ public class JavaIntegrationExample {
 
         ULinkParameters unifiedLink = ULinkParameters.unified(
             "test.ly",
+            null,
             null,
             "https://ios.example.com",
             "https://android.example.com",
@@ -307,7 +312,7 @@ public class JavaIntegrationExample {
         // Minimal call - uses nulls for optional parameters
         ULinkParameters minimal = ULinkParameters.dynamic(
             "test.ly",
-            null, null, null,
+            null, null, null, null,
             "https://fallback.com"
         );
         assertNotNull(minimal);
@@ -318,7 +323,7 @@ public class JavaIntegrationExample {
         ULinkParameters withSlug = ULinkParameters.dynamic(
             "test.ly",
             "my-custom-slug",
-            null, null,
+            null, null, null,
             "https://fallback.com",
             null, null, null
         );
