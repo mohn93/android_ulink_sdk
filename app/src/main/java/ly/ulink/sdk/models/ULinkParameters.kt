@@ -75,7 +75,12 @@ data class ULinkParameters(
      * Optional custom slug for the link
      */
     val slug: String? = null,
-    
+
+    /**
+     * Optional human-readable name for the link (shown in the dashboard)
+     */
+    val name: String? = null,
+
     /**
      * iOS URL for unified links (direct iOS app store or web URL)
      */
@@ -133,6 +138,7 @@ data class ULinkParameters(
         fun dynamic(
             domain: String,
             slug: String? = null,
+            name: String? = null,
             iosFallbackUrl: String? = null,
             androidFallbackUrl: String? = null,
             fallbackUrl: String? = null,
@@ -143,6 +149,7 @@ data class ULinkParameters(
             return ULinkParameters(
                 type = ULinkType.DYNAMIC.name.lowercase(),
                 slug = slug,
+                name = name,
                 iosFallbackUrl = iosFallbackUrl,
                 androidFallbackUrl = androidFallbackUrl,
                 fallbackUrl = fallbackUrl,
@@ -184,6 +191,7 @@ data class ULinkParameters(
         fun unified(
             domain: String,
             slug: String? = null,
+            name: String? = null,
             iosUrl: String,
             androidUrl: String,
             fallbackUrl: String,
@@ -194,6 +202,7 @@ data class ULinkParameters(
             return ULinkParameters(
                 type = ULinkType.UNIFIED.name.lowercase(),
                 slug = slug,
+                name = name,
                 iosUrl = iosUrl,
                 androidUrl = androidUrl,
                 fallbackUrl = fallbackUrl,
@@ -235,6 +244,7 @@ data class ULinkParameters(
         
         type?.let { data["type"] = it }
         slug?.let { data["slug"] = it }
+        name?.let { data["name"] = it }
         iosUrl?.let { data["iosUrl"] = it }
         androidUrl?.let { data["androidUrl"] = it }
         iosFallbackUrl?.let { data["iosFallbackUrl"] = it }
