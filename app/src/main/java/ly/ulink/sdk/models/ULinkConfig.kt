@@ -4,7 +4,7 @@ package ly.ulink.sdk.models
  * Configuration for the ULink SDK.
  *
  * @param apiKey The API key for the ULink service (required)
- * @param baseUrl The base URL for the ULink API (default: "https://api.ulink.ly")
+ * @param baseUrl Internal use only. Defaults to the production API. You do not need to set this.
  * @param debug Whether to enable debug logging (default: false)
  * @param enableDeepLinkIntegration Whether to automatically handle deep links (default: true)
  * @param persistLastLinkData Whether to persist the last resolved link (default: true)
@@ -21,7 +21,8 @@ data class ULinkConfig @JvmOverloads constructor(
     val apiKey: String,
     
     /**
-     * The base URL for the ULink API
+     * Internal use only. Defaults to the production ULink API.
+     * You do not need to set this — it is used for local development and testing.
      */
     val baseUrl: String = "https://api.ulink.ly",
     

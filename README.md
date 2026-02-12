@@ -134,7 +134,6 @@ class MyApplication : Application() {
 
         val config = ULinkConfig(
             apiKey = "your-api-key",
-            baseUrl = "https://api.ulink.ly", // Optional, defaults to this URL
             debug = BuildConfig.DEBUG,
             enableDeepLinkIntegration = true // Automatic deep link handling
         )
@@ -156,16 +155,7 @@ public class MyApplication extends Application {
         super.onCreate();
 
         ULinkConfig config = new ULinkConfig(
-            "your-api-key",
-            "https://api.ulink.ly",
-            BuildConfig.DEBUG,  // debug
-            true,               // enableDeepLinkIntegration
-            true,               // persistLastLinkData
-            86400,              // lastLinkTimeToLiveSeconds (24 hours)
-            false,              // clearLastLinkOnRead
-            false,              // redactAllParametersInLastLink
-            Collections.emptyList(), // redactedParameterKeysInLastLink
-            true                // autoCheckDeferredLink
+            "your-api-key" // apiKey
         );
 
         ULink.initializeAsync(this, config)
@@ -613,7 +603,7 @@ The main class for interacting with the ULink SDK.
 ```kotlin
 data class ULinkConfig(
     val apiKey: String,
-    val baseUrl: String = "https://api.ulink.ly",
+    val baseUrl: String = "https://api.ulink.ly", // Internal use only, do not set
     val debug: Boolean = false,
     val enableDeepLinkIntegration: Boolean = true,
     val persistLastLinkData: Boolean = true,

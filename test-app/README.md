@@ -30,7 +30,6 @@ The test app includes the following functionality:
    private fun initializeULink() {
        val config = ULinkConfig(
            apiKey = "your-api-key-here", // Replace with your actual API key
-           baseUrl = "https://api.ulink.ly",
            debug = true
        )
        ulink = ULink(this, config)
