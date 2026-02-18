@@ -232,7 +232,7 @@ class ULink private constructor(
          * **Threading:** Both callbacks are invoked on the main (UI) thread.
          *
          * **Error Handling:** If [onError] is not provided and initialization fails,
-         * the exception will be re-thrown. Always provide an error callback in production.
+         * the error is logged but not re-thrown, preventing host app crashes.
          *
          * Example usage in Java:
          * ```java
@@ -277,7 +277,11 @@ class ULink private constructor(
                     val instance = initialize(context, config)
                     onSuccess(instance)
                 } catch (e: Exception) {
-                    onError?.invoke(e) ?: throw e
+                    if (onError != null) {
+                        onError.invoke(e)
+                    } else {
+                        Log.e("ULink", "Initialization failed (no onError handler provided): ${e.message}", e)
+                    }
                 }
             }
         }
@@ -671,11 +675,10 @@ class ULink private constructor(
     
     /**
      * Sets up the SDK
-     * 
+     *
      * This method is now suspend and awaits bootstrap completion.
-     * It throws ULinkInitializationError if essential operations fail.
-     * 
-     * @throws ULinkInitializationError if bootstrap fails
+     * Network failures during bootstrap are non-fatal — the SDK will initialize
+     * in degraded mode and retry bootstrap on next app foreground via lifecycle observer.
      */
     private suspend fun setup() {
         // Register lifecycle observer
@@ -703,17 +706,19 @@ class ULink private constructor(
             logDebug("Installation Token: ${if (installationToken != null) "[LOADED]" else "[NOT FOUND]"}")
         }
         
-        // Bootstrap installation and session with the server (essential - await and throw on failure)
+        // Bootstrap installation and session with the server
+        // Network failures are non-fatal — the SDK initializes in degraded mode
+        // and retries bootstrap when the app comes to foreground (via onStart lifecycle)
         try {
             bootstrap()
             bootstrapSucceeded = true
             bootstrapCompleted = true
-            
+
             if (pendingSessionStart) {
                 pendingSessionStart = false
                 startSessionIfNeeded()
             }
-            
+
             // Check for deferred links after bootstrap completes (if enabled in config)
             // Launch in background coroutine (non-blocking) to match iOS behavior
             if (config.autoCheckDeferredLink) {
@@ -725,17 +730,10 @@ class ULink private constructor(
                     }
                 }
             }
-        } catch (e: ULinkInitializationError) {
-            bootstrapSucceeded = false
-            bootstrapCompleted = true
-            throw e
         } catch (e: Exception) {
             bootstrapSucceeded = false
             bootstrapCompleted = true
-            throw ULinkInitializationError.bootstrapFailed(
-                statusCode = 0,
-                message = "Bootstrap failed: ${e.message ?: "Unknown error"}"
-            )
+            logError("Bootstrap failed during setup (non-fatal, will retry on next foreground): ${e.message}", e)
         }
     }
 
