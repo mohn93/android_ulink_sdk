@@ -16,6 +16,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import ly.ulink.sdk.models.*
 import ly.ulink.sdk.models.ULinkInitializationError
@@ -51,7 +53,7 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
-        private const val SDK_VERSION = "1.0.10"
+        private const val SDK_VERSION = "1.0.11"
         
         @Volatile
         private var INSTANCE: ULink? = null
@@ -99,9 +101,12 @@ class ULink private constructor(
          * @return The initialized ULink instance
          * @throws ULinkInitializationError if initialization fails
          */
-        @Volatile
-        private var isInitializing = false
-        private val initLock = Any()
+        // Suspend-safe lock for initialize(). A JVM monitor (synchronized) cannot
+        // be held across a suspension point — the coroutine could resume on a
+        // different thread and unlock would throw IllegalMonitorStateException.
+        // Mutex.withLock suspends instead of blocking, so concurrent callers
+        // serialize without parking any thread.
+        private val initMutex = Mutex()
 
         @JvmStatic
         suspend fun initialize(
@@ -114,44 +119,27 @@ class ULink private constructor(
             if (existingInstance != null && existingInstance.bootstrapSucceeded) {
                 return existingInstance
             }
-            
-            // Thread-safe initialization with synchronization
-            synchronized(initLock) {
+
+            return initMutex.withLock {
                 // Double-check after acquiring lock
                 val instance = INSTANCE
                 if (instance != null) {
                     if (instance.bootstrapSucceeded) {
-                        return instance
+                        return@withLock instance
                     }
-                    
-                    // Bootstrap failed or didn't complete - retry only if not currently initializing
-                    if (!isInitializing) {
-                        isInitializing = true
-                        try {
-                            instance.bootstrapCompleted = false
-                            instance.bootstrapSucceeded = false
-                            kotlinx.coroutines.runBlocking {
-                                instance.setup()
-                            }
-                        } finally {
-                            isInitializing = false
-                        }
-                    }
-                    return instance
+
+                    // Bootstrap previously failed — retry on this caller.
+                    instance.bootstrapCompleted = false
+                    instance.bootstrapSucceeded = false
+                    instance.setup()
+                    return@withLock instance
                 }
-                
-                // Create new instance - protected by lock
-                isInitializing = true
-                try {
-                    val newInstance = ULink(context.applicationContext, config, httpClient)
-                    INSTANCE = newInstance
-                    kotlinx.coroutines.runBlocking {
-                        newInstance.setup()
-                    }
-                    return newInstance
-                } finally {
-                    isInitializing = false
-                }
+
+                // Create new instance - protected by mutex
+                val newInstance = ULink(context.applicationContext, config, httpClient)
+                INSTANCE = newInstance
+                newInstance.setup()
+                newInstance
             }
         }
 
