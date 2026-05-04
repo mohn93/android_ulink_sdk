@@ -14,6 +14,16 @@ The ULink Android SDK provides a comprehensive solution for creating, managing, 
 - **Deferred Deep Links**: Handle deep links from app install referrers
 - **Debug Logging**: Stream SDK logs for debugging
 
+## AI-Assisted Setup
+
+Using Claude Code, Cursor, Codex, or another AI coding agent? Install the ULink onboarding skill in one command:
+
+```bash
+npx skills add https://ulink.ly
+```
+
+Then ask your assistant to **"setup ulink"** — it'll detect your Android project, configure your ULink dashboard, edit `build.gradle` and `AndroidManifest.xml`, and verify App Links. Works with 50+ AI agents via the [open agent-skills CLI](https://github.com/vercel-labs/skills). [Learn more →](https://docs.ulink.ly/getting-started/ai-setup)
+
 ## Installation
 
 ### Using Maven Central (Recommended)
