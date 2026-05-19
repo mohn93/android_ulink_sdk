@@ -126,7 +126,15 @@ data class ULinkParameters(
      * Required to ensure consistent link generation and prevent app breakage
      * when projects have multiple domains configured.
      */
-    val domain: String
+    val domain: String,
+
+    /**
+     * Optional caller-supplied identifier used to make link creation idempotent.
+     * When set, ULink scopes the key to your project and returns the existing
+     * link on repeat calls instead of creating a duplicate. Pick a deterministic
+     * key from your system, e.g. `share:user:123:post:456`.
+     */
+    val externalId: String? = null
 ) {
     companion object {
         /**
@@ -144,7 +152,8 @@ data class ULinkParameters(
             fallbackUrl: String? = null,
             parameters: Map<String, Any>? = null,
             socialMediaTags: SocialMediaTags? = null,
-            metadata: Map<String, Any>? = null
+            metadata: Map<String, Any>? = null,
+            externalId: String? = null
         ): ULinkParameters {
             return ULinkParameters(
                 type = ULinkType.DYNAMIC.name.lowercase(),
@@ -178,10 +187,11 @@ data class ULinkParameters(
                         }
                     }
                 },
-                domain = domain
+                domain = domain,
+                externalId = externalId
             )
         }
-        
+
         /**
          * Factory method for creating unified links
          * Unified links are simple platform-based redirects intended for browser handling
@@ -197,7 +207,8 @@ data class ULinkParameters(
             fallbackUrl: String,
             parameters: Map<String, Any>? = null,
             socialMediaTags: SocialMediaTags? = null,
-            metadata: Map<String, Any>? = null
+            metadata: Map<String, Any>? = null,
+            externalId: String? = null
         ): ULinkParameters {
             return ULinkParameters(
                 type = ULinkType.UNIFIED.name.lowercase(),
@@ -231,7 +242,8 @@ data class ULinkParameters(
                         }
                     }
                 },
-                domain = domain
+                domain = domain,
+                externalId = externalId
             )
         }
     }
@@ -251,7 +263,8 @@ data class ULinkParameters(
         androidFallbackUrl?.let { data["androidFallbackUrl"] = it }
         fallbackUrl?.let { data["fallbackUrl"] = it }
         data["domain"] = domain
-        
+        externalId?.let { data["externalId"] = it }
+
         // Handle regular parameters (non-social media)
         val regularParameters = mutableMapOf<String, Any>()
         parameters?.jsonObject?.forEach { (key, value) ->
