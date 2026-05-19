@@ -201,4 +201,50 @@ class ModelsTest {
         assertNotEquals(config1, config3)
         assertNotEquals(config1.hashCode(), config3.hashCode())
     }
+
+    @Test
+    fun `test unified link serializes externalId`() {
+        val parameters = ULinkParameters.unified(
+            domain = "example.shared.ly",
+            iosUrl = "https://apps.apple.com/app/test",
+            androidUrl = "https://play.google.com/store/apps/details?id=test",
+            fallbackUrl = "https://example.com",
+            externalId = "share:user:123:post:456"
+        )
+
+        assertEquals("share:user:123:post:456", parameters.externalId)
+        assertEquals("share:user:123:post:456", parameters.toJson()["externalId"])
+    }
+
+    @Test
+    fun `test unified link omits externalId when null`() {
+        val parameters = ULinkParameters.unified(
+            domain = "example.shared.ly",
+            iosUrl = "https://apps.apple.com/app/test",
+            androidUrl = "https://play.google.com/store/apps/details?id=test",
+            fallbackUrl = "https://example.com"
+        )
+
+        assertNull(parameters.externalId)
+        assertFalse(parameters.toJson().containsKey("externalId"))
+    }
+
+    @Test
+    fun `test dynamic link serializes externalId`() {
+        val parameters = ULinkParameters.dynamic(
+            domain = "example.shared.ly",
+            externalId = "campaign:summer-sale-2026"
+        )
+
+        assertEquals("campaign:summer-sale-2026", parameters.externalId)
+        assertEquals("campaign:summer-sale-2026", parameters.toJson()["externalId"])
+    }
+
+    @Test
+    fun `test dynamic link omits externalId when null`() {
+        val parameters = ULinkParameters.dynamic(domain = "example.shared.ly")
+
+        assertNull(parameters.externalId)
+        assertFalse(parameters.toJson().containsKey("externalId"))
+    }
 }
