@@ -403,6 +403,26 @@ lifecycleScope.launch {
 }
 ```
 
+#### Idempotent Link Creation
+
+Pass `externalId` to avoid creating duplicates when the same share button is tapped repeatedly. ULink scopes the key to your project — repeat calls return the existing link instead of creating a new one. See the [docs](https://docs.ulink.ly/create-links/idempotent-link-creation) for full semantics.
+
+```kotlin
+val parameters = ULinkParameters.unified(
+    domain = "links.shared.ly",
+    iosUrl = "myapp://post/456",
+    androidUrl = "myapp://post/456",
+    fallbackUrl = "https://myapp.com/post/456",
+    externalId = "share:user:123:post:456"
+)
+
+lifecycleScope.launch {
+    val response = ulink.createLink(parameters)
+    // First call:        creates link, returns 201
+    // Subsequent calls:  returns the same link, 200
+}
+```
+
 ### 5. Installation Tracking & Reinstall Detection
 
 The SDK automatically tracks installations and can detect reinstalls:
