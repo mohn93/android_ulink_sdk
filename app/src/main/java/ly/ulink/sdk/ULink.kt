@@ -53,7 +53,9 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
-        private const val SDK_VERSION = "1.0.11"
+        // Sourced from BuildConfig, generated from the Gradle `version` (set by the release tag via
+        // -Pversion). Keeps client-telemetry headers in lockstep with the published Maven artifact.
+        private val SDK_VERSION = BuildConfig.SDK_VERSION
         
         @Volatile
         private var INSTANCE: ULink? = null
