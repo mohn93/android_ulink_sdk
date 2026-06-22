@@ -7,7 +7,7 @@ apply plugin: 'signing'
 
 
 group = "ly.ulink"         // your approved groupId
-version = project.findProperty("version") ?: "1.1.0"  // semver, overridable via -Pversion=X.Y.Z
+version = project.findProperty("version") ?: "1.1.1"  // semver, overridable via -Pversion=X.Y.Z
 
 android {
     namespace = "ly.ulink.sdk"
@@ -17,6 +17,16 @@ android {
         minSdk 24
         targetSdk 35
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        // Single source of truth for the SDK version exposed to runtime code (client telemetry
+        // headers + bootstrap payload). Derived from the Gradle `version` above, which the release
+        // workflow sets from the git tag via -Pversion — so SDK_VERSION can never drift from the
+        // published Maven coordinate again.
+        buildConfigField "String", "SDK_VERSION", "\"${project.version}\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {
@@ -120,7 +130,7 @@ afterEvaluate {
                 
                 groupId = 'ly.ulink'
                 artifactId = 'ulink-sdk'
-                version = project.findProperty("version") ?: "1.1.0"
+                version = project.version
                 
                 // Only add artifacts if they're not already included by components.release
                 artifact(androidJavadocJar)
