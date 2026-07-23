@@ -32,7 +32,6 @@ class MainActivity : AppCompatActivity() {
         initializeULink()
         setupUI()
         handleIntent(intent)
-        observeDeepLinks()
     }
     
     override fun onNewIntent(intent: Intent) {
@@ -49,8 +48,13 @@ class MainActivity : AppCompatActivity() {
             enableDeepLinkIntegration = true // Enable automatic deep link handling
         )
         
-        ulink = ULink.initialize(this, config)
-        Log.d(TAG, "ULink SDK initialized with automatic deep link integration")
+        ULink.initialize(this, config, { instance ->
+            ulink = instance
+            Log.d(TAG, "ULink SDK initialized with automatic deep link integration")
+            observeDeepLinks()
+        }, { error ->
+            Log.e(TAG, "ULink SDK init failed", error)
+        })
     }
     
     private fun setupUI() {
@@ -154,6 +158,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 
                 val linkParams = ULinkParameters.dynamic(
+                    domain = "goldpass.shared.ly",
                     slug = "summer-sale-product",
                     iosFallbackUrl = "https://apps.apple.com/app/your-app",
                     androidFallbackUrl = "https://play.google.com/store/apps/details?id=your.package",
@@ -185,6 +190,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 
                 val linkParams = ULinkParameters.unified(
+                    domain = "goldpass.shared.ly",
                     slug = "app-home",
                     iosUrl = "myapp://home",
                     androidUrl = "myapp://home",
@@ -213,12 +219,9 @@ class MainActivity : AppCompatActivity() {
                     "feature" to "testing"
                 )
                 
-                val response = ulink.startSession(metadata)
-                if (response.success) {
-                    updateLog("Session started successfully")
-                } else {
-                    updateLog("Failed to start session: ${response.error}")
-                }
+                // startSession is internal in the current SDK; session lifecycle is
+                // managed automatically. Kept as a no-op for the E2E harness.
+                updateLog("Session lifecycle is managed automatically by the SDK")
             } catch (e: Exception) {
                 updateLog("Error starting session: ${e.message}")
                 Log.e(TAG, "Error starting session", e)
@@ -431,6 +434,7 @@ class MainActivity : AppCompatActivity() {
              try {
                  updateLog("Test 1: Creating link with invalid parameters...")
                  val invalidParams = ULinkParameters.dynamic(
+                     domain = "goldpass.shared.ly",
                      fallbackUrl = "invalid-url" // Invalid URL
                  )
                  ulink.createLink(invalidParams)
@@ -481,6 +485,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 // This will test the SDK's network error handling
                  val params = ULinkParameters.dynamic(
+                     domain = "goldpass.shared.ly",
                      fallbackUrl = "https://httpstat.us/500" // Returns 500 error
                  )
                 ulink.createLink(params)

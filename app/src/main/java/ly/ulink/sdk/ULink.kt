@@ -53,6 +53,11 @@ class ULink private constructor(
         private const val KEY_INSTALLATION_TOKEN = "installation_token"
         private const val KEY_LAST_LINK_DATA = "last_link_data"
         private const val KEY_LAST_LINK_SAVED_AT = "last_link_saved_at"
+        // Marks an activity intent as already processed for automatic deep linking.
+        // onActivityResumed re-reads the same activity.intent on every resume (and
+        // after config-change / process restore), so without a per-intent marker a
+        // single link would emit on every foreground.
+        private const val EXTRA_ULINK_HANDLED = "ly.ulink.intent_handled"
         // Sourced from BuildConfig, generated from the Gradle `version` (set by the release tag via
         // -Pversion). Keeps client-telemetry headers in lockstep with the published Maven artifact.
         private val SDK_VERSION = BuildConfig.SDK_VERSION
@@ -280,6 +285,13 @@ class ULink private constructor(
     private val sharedPreferences: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val httpClient = injectedHttpClient ?: HttpClient(config.debug)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    // Guards against double-registration of ActivityLifecycleCallbacks. setup() can
+    // run more than once (bootstrap-retry path in initialize()), and Android does not
+    // de-duplicate the same callback instance, so re-registering would multiply
+    // deep-link emissions.
+    @Volatile
+    private var activityCallbacksRegistered = false
     
     // Installation token
     private var installationToken: String? = null
@@ -674,9 +686,11 @@ class ULink private constructor(
         // Register lifecycle observer
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
         
-        // Register activity lifecycle callbacks for automatic deep link integration
-        if (config.enableDeepLinkIntegration) {
+        // Register activity lifecycle callbacks for automatic deep link integration.
+        // Guarded so a repeated setup() (bootstrap retry) does not register twice.
+        if (config.enableDeepLinkIntegration && !activityCallbacksRegistered) {
             (context.applicationContext as? Application)?.registerActivityLifecycleCallbacks(this)
+            activityCallbacksRegistered = true
         }
         
         // Load installation token from storage
@@ -1905,15 +1919,16 @@ class ULink private constructor(
     
     // ActivityLifecycleCallbacks implementation for automatic deep link integration
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
-        if (config.enableDeepLinkIntegration) {
-            activity.intent?.let { intent ->
-                handleActivityIntent(intent)
-            }
-        }
+        // Deep links are processed only in onActivityResumed. Both callbacks fire for
+        // a link-launched activity, and processing them here as well would emit the
+        // same link twice. onActivityResumed is guaranteed to run after the activity
+        // (and typically the host's collector) is fully constructed, so it is the
+        // single processing point. Re-delivery of the same intent is deduped in
+        // handleActivityIntent.
     }
-    
+
     override fun onActivityStarted(activity: Activity) {}
-    
+
     override fun onActivityResumed(activity: Activity) {
         if (config.enableDeepLinkIntegration) {
             activity.intent?.let { intent ->
@@ -1934,14 +1949,17 @@ class ULink private constructor(
      * Handles intent from activity for automatic deep link processing
      */
     private fun handleActivityIntent(intent: Intent) {
-        if (intent.action == Intent.ACTION_VIEW) {
-            intent.data?.let { uri ->
-                if (config.debug) {
-                    logDebug("Automatic deep link detected: $uri")
-                }
-                handleDeepLink(uri)
-            }
+        if (intent.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        // Process each intent at most once. The marker must be set synchronously here
+        // (before dispatching to handleDeepLink's coroutine), otherwise two rapid
+        // callbacks could both pass the guard before either marks the intent.
+        if (intent.getBooleanExtra(EXTRA_ULINK_HANDLED, false)) return
+        intent.putExtra(EXTRA_ULINK_HANDLED, true)
+        if (config.debug) {
+            logDebug("Automatic deep link detected: $uri")
         }
+        handleDeepLink(uri)
     }
 
     // ========== JAVA-FRIENDLY COMPLETABLE FUTURE WRAPPERS ==========
@@ -2270,6 +2288,7 @@ class ULink private constructor(
         // Unregister activity lifecycle callbacks
         if (config.enableDeepLinkIntegration) {
             (context.applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(this)
+            activityCallbacksRegistered = false
         }
 
         if (config.debug) {
