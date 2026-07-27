@@ -871,7 +871,7 @@ class ULink private constructor(
                     logError("Error collecting common fingerprint fields", e)
                 }
 
-                val url = "https://api.ulink.ly/sdk/deferred/match"
+                val url = "${config.baseUrl}/sdk/deferred/match"
                 val headers = mapOf(
                     "Content-Type" to "application/json",
                     "X-App-Key" to config.apiKey
