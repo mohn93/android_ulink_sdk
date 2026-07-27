@@ -18,6 +18,11 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.Assert.*
 import ly.ulink.sdk.utils.DeviceInfoUtils
+import com.android.installreferrer.api.InstallReferrerClient
+import com.android.installreferrer.api.InstallReferrerStateListener
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
@@ -262,5 +267,51 @@ class ULinkTest {
         // there should be an active session
         assertTrue(ulink.hasActiveSession())
         assertNotNull(ulink.getCurrentSessionId())
+    }
+
+    /**
+     * The deferred-match endpoint must be derived from ULinkConfig.baseUrl like every
+     * other SDK call. It was hardcoded to https://api.ulink.ly, so integrators pointing
+     * the SDK at a staging/self-hosted API still sent device fingerprints to production
+     * and deferred linking could not be tested outside prod.
+     */
+    @Test
+    fun `deferred match request targets the configured baseUrl`() {
+        // Install Referrer is unavailable in unit tests; resolve it immediately so
+        // checkDeferredLink() proceeds to the network call instead of hanging.
+        mockkStatic(InstallReferrerClient::class)
+        val referrerBuilder = mockk<InstallReferrerClient.Builder>(relaxed = true)
+        val referrerClient = mockk<InstallReferrerClient>(relaxed = true)
+        every { InstallReferrerClient.newBuilder(any()) } returns referrerBuilder
+        every { referrerBuilder.build() } returns referrerClient
+        every { referrerClient.startConnection(any()) } answers {
+            firstArg<InstallReferrerStateListener>().onInstallReferrerSetupFinished(
+                InstallReferrerClient.InstallReferrerResponse.FEATURE_NOT_SUPPORTED
+            )
+        }
+
+        val requestedUrls = Collections.synchronizedList(mutableListOf<String>())
+        val deferredCalled = CountDownLatch(1)
+        coEvery { mockHttpClient.postJson(any(), any(), any()) } answers {
+            val url = firstArg<String>()
+            requestedUrls.add(url)
+            if (url.contains("/sdk/deferred/match")) deferredCalled.countDown()
+            HttpResponse(
+                statusCode = 200,
+                body = """{"success":false}""",
+                isSuccess = true
+            )
+        }
+
+        ulink.checkDeferredLink()
+
+        assertTrue(
+            "deferred match request was never issued",
+            deferredCalled.await(5, TimeUnit.SECONDS)
+        )
+        val deferredUrl = requestedUrls.first { it.contains("/sdk/deferred/match") }
+        assertEquals("https://api.test.com/sdk/deferred/match", deferredUrl)
+
+        unmockkStatic(InstallReferrerClient::class)
     }
 }
