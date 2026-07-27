@@ -8,6 +8,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import io.mockk.*
 import java.io.ByteArrayInputStream
+import java.net.UnknownHostException
+import java.net.ConnectException
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.io.ByteArrayOutputStream
 
 class HttpClientTest {
@@ -175,5 +179,144 @@ class HttpClientTest {
         assertEquals(200, response.statusCode)
         assertEquals(largeResponseBody, response.body)
         assertEquals(10000, response.body.length)
+    }
+
+    // ── Retry on transient pre-send network failures ──────────────────────
+    //
+    // A single DNS hiccup at cold start used to fail permanently (statusCode -1)
+    // because there was no retry anywhere in the SDK. Only failures that prove
+    // the request never reached the server are retried, so no request with side
+    // effects (session start, bootstrap) can be duplicated.
+
+    @Test
+    fun `retries a DNS failure and succeeds on a later attempt`() = runTest {
+        var attempts = 0
+        val client = HttpClient(debug = false, retryBackoffMs = 0L) { _ ->
+            attempts++
+            if (attempts == 1) throw UnknownHostException("Unable to resolve host \"api.ulink.ly\"")
+            mockConnection
+        }
+        val responseBody = """{"success": true}"""
+        every { mockConnection.responseCode } returns 200
+        every { mockConnection.inputStream } returns ByteArrayInputStream(responseBody.toByteArray())
+
+        val response = client.get("https://api.test.com/data")
+
+        assertTrue("transient DNS failure must not be fatal", response.isSuccess)
+        assertEquals(200, response.statusCode)
+        assertEquals("should have retried exactly once", 2, attempts)
+    }
+
+    @Test
+    fun `retries a connect failure for POST too`() = runTest {
+        var attempts = 0
+        val client = HttpClient(debug = false, retryBackoffMs = 0L) { _ ->
+            attempts++
+            if (attempts == 1) throw ConnectException("Failed to connect")
+            mockConnection
+        }
+        val responseBody = """{"success": true}"""
+        every { mockConnection.responseCode } returns 201
+        every { mockConnection.inputStream } returns ByteArrayInputStream(responseBody.toByteArray())
+        every { mockConnection.outputStream } returns ByteArrayOutputStream()
+
+        val response = client.postJson("https://api.test.com/create", mapOf("k" to "v"))
+
+        assertTrue(response.isSuccess)
+        assertEquals(2, attempts)
+    }
+
+    @Test
+    fun `gives up after a bounded number of attempts and reports the error`() = runTest {
+        var attempts = 0
+        val client = HttpClient(debug = false, retryBackoffMs = 0L) { _ ->
+            attempts++
+            throw UnknownHostException("Unable to resolve host \"api.ulink.ly\"")
+        }
+
+        val response = client.get("https://api.test.com/data")
+
+        assertFalse(response.isSuccess)
+        assertEquals(-1, response.statusCode)
+        assertTrue(response.body.contains("Unable to resolve host"))
+        assertEquals("retries must be bounded", 3, attempts)
+    }
+
+    @Test
+    fun `does not retry once the server has responded`() = runTest {
+        var attempts = 0
+        val client = HttpClient(debug = false, retryBackoffMs = 0L) { _ ->
+            attempts++
+            mockConnection
+        }
+        val errorBody = """{"error":"boom"}"""
+        every { mockConnection.responseCode } returns 500
+        every { mockConnection.errorStream } returns ByteArrayInputStream(errorBody.toByteArray())
+
+        val response = client.get("https://api.test.com/data")
+
+        assertEquals(500, response.statusCode)
+        assertEquals("a server response means the request was processed — retrying could duplicate it", 1, attempts)
+    }
+
+    /**
+     * The safety boundary: anything that can be thrown AFTER the request was put on
+     * the wire must never be replayed, or /sdk/bootstrap and /sdk/sessions/start
+     * could create duplicate installations and sessions (which are billable).
+     * A 5xx does not exercise this — it throws nothing and never enters the retry
+     * path — so these assert the attempt count for real post-send exceptions.
+     */
+    @Test
+    fun `does not retry a read timeout`() = runTest {
+        var attempts = 0
+        val client = HttpClient(debug = false, retryBackoffMs = 0L) { _ ->
+            attempts++
+            throw SocketTimeoutException("Read timed out")
+        }
+
+        val response = client.postJson("https://api.test.com/sdk/sessions/start", mapOf("k" to "v"))
+
+        assertFalse(response.isSuccess)
+        assertEquals(-1, response.statusCode)
+        assertEquals("a read timeout may already have been processed — never replay it", 1, attempts)
+    }
+
+    @Test
+    fun `does not retry a connection reset`() = runTest {
+        var attempts = 0
+        val client = HttpClient(debug = false, retryBackoffMs = 0L) { _ ->
+            attempts++
+            throw SocketException("Connection reset")
+        }
+
+        val response = client.postJson("https://api.test.com/sdk/bootstrap", mapOf("k" to "v"))
+
+        assertFalse(response.isSuccess)
+        assertEquals("a reset mid-request may already have been processed", 1, attempts)
+    }
+
+    /**
+     * Faithful seam: HttpURLConnection connects lazily, so a real DNS failure
+     * surfaces from getResponseCode()/getOutputStream(), not from constructing the
+     * connection. Retry must work when the throw happens there too.
+     */
+    @Test
+    fun `retries when the failure surfaces from the connection rather than its construction`() = runTest {
+        var attempts = 0
+        val failing = mockk<HttpURLConnection>(relaxed = true)
+        every { failing.responseCode } throws UnknownHostException("Unable to resolve host")
+        val responseBody = """{"success": true}"""
+        every { mockConnection.responseCode } returns 200
+        every { mockConnection.inputStream } returns ByteArrayInputStream(responseBody.toByteArray())
+
+        val client = HttpClient(debug = false, retryBackoffMs = 0L) { _ ->
+            attempts++
+            if (attempts == 1) failing else mockConnection
+        }
+
+        val response = client.get("https://api.test.com/data")
+
+        assertTrue(response.isSuccess)
+        assertEquals(2, attempts)
     }
 }
