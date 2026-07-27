@@ -52,6 +52,12 @@ class BootstrapRetryTest {
     /** Flipped to false to simulate the network recovering. */
     private var bootstrapFails = true
 
+    /** Real backing state for the once-per-install deferred flag. */
+    private var deferredChecked = false
+
+    /** Flipped to true to make the deferred match call itself fail. */
+    private var deferredFails = false
+
     @Before
     fun setUp() {
         mockContext = mockk(relaxed = true)
@@ -67,6 +73,11 @@ class BootstrapRetryTest {
         }
         every { mockEditor.apply() } just Runs
         every { mockSharedPreferences.getString("installation_id", null) } answers { storedInstallationId }
+        every { mockSharedPreferences.getBoolean("ulink_deferred_checked", any()) } answers { deferredChecked }
+        every { mockEditor.putBoolean("ulink_deferred_checked", any()) } answers {
+            deferredChecked = secondArg()
+            mockEditor
+        }
 
         config = ULinkConfig(
             apiKey = "test-api-key",
@@ -85,6 +96,12 @@ class BootstrapRetryTest {
                 HttpResponse(
                     statusCode = -1,
                     body = """Unable to resolve host "api.test.com": No address associated with hostname""",
+                    isSuccess = false,
+                )
+            } else if (url.endsWith("/sdk/deferred/match") && deferredFails) {
+                HttpResponse(
+                    statusCode = -1,
+                    body = "Read timed out",
                     isSuccess = false,
                 )
             } else {
@@ -238,5 +255,111 @@ class BootstrapRetryTest {
         )
 
         unmockkStatic(InstallReferrerClient::class)
+    }
+
+    /** Shared Install Referrer stub — unavailable in unit tests, resolve immediately. */
+    private fun stubInstallReferrer() {
+        mockkStatic(InstallReferrerClient::class)
+        val referrerBuilder = mockk<InstallReferrerClient.Builder>(relaxed = true)
+        val referrerClient = mockk<InstallReferrerClient>(relaxed = true)
+        every { InstallReferrerClient.newBuilder(any()) } returns referrerBuilder
+        every { referrerBuilder.build() } returns referrerClient
+        every { referrerClient.startConnection(any()) } answers {
+            firstArg<InstallReferrerStateListener>().onInstallReferrerSetupFinished(
+                InstallReferrerClient.InstallReferrerResponse.FEATURE_NOT_SUPPORTED
+            )
+        }
+    }
+
+    private fun deferredConfig() = ULinkConfig(
+        apiKey = "test-api-key",
+        baseUrl = "https://api.test.com",
+        debug = false,
+        enableDeepLinkIntegration = false,
+        autoCheckDeferredLink = true,
+    )
+
+    private fun deferredCallCount() = requestedUrls.count { it.endsWith("/sdk/deferred/match") }
+
+    /**
+     * Overlapping foreground dispatches must not each fire a deferred match.
+     * The server consumes a click per call (matched_at), so a duplicate either
+     * double-consumes the same click or steals the next one — deep-linking the
+     * user to the wrong content and mis-attributing the install.
+     */
+    @Test
+    fun `overlapping foregrounds fire the deferred match at most once`() = runTest {
+        stubInstallReferrer()
+        try {
+            val ulink = ULink.initialize(mockContext, deferredConfig(), mockHttpClient)
+            bootstrapFails = false
+            requestedUrls.clear()
+
+            val owner = mockk<LifecycleOwner>(relaxed = true)
+            ulink.onStart(owner)
+            ulink.onStart(owner)
+
+            pumpUntil { deferredCallCount() >= 1 }
+            // let any second (unwanted) call land before asserting
+            pumpUntil(timeoutMs = 1_500) { deferredCallCount() > 1 }
+
+            assertEquals("deferred match must not be fired twice", 1, deferredCallCount())
+        } finally {
+            unmockkStatic(InstallReferrerClient::class)
+        }
+    }
+
+    /**
+     * Foregrounding while still offline must not attempt the deferred check.
+     * checkDeferredLink() calls ensureBootstrapCompleted(), which THROWS when
+     * bootstrap has not succeeded — thrown inside scope.launch on
+     * Dispatchers.Main + SupervisorJob with no CoroutineExceptionHandler, that
+     * reaches the default handler and crashes the host app.
+     */
+    @Test
+    fun `foregrounding while still offline does not attempt the deferred check or crash`() = runTest {
+        stubInstallReferrer()
+        try {
+            val ulink = ULink.initialize(mockContext, deferredConfig(), mockHttpClient)
+            requestedUrls.clear()
+            // network stays down
+            ulink.onStart(mockk<LifecycleOwner>(relaxed = true))
+            pumpUntil(timeoutMs = 1_500) { deferredCallCount() > 0 }
+
+            assertEquals("must not call deferred match while bootstrap is failing", 0, deferredCallCount())
+        } finally {
+            unmockkStatic(InstallReferrerClient::class)
+        }
+    }
+
+    /**
+     * A deferred check whose own request failed must not burn the once-per-install
+     * flag — otherwise the fresh install loses its deferred link permanently, the
+     * exact outcome this recovery path exists to prevent.
+     */
+    @Test
+    fun `a failed deferred match is retried on a later foreground`() = runTest {
+        stubInstallReferrer()
+        try {
+            deferredFails = true
+            val ulink = ULink.initialize(mockContext, deferredConfig(), mockHttpClient)
+            bootstrapFails = false
+
+            val owner = mockk<LifecycleOwner>(relaxed = true)
+            ulink.onStart(owner)
+            assertTrue("first attempt should fire", pumpUntil { deferredCallCount() >= 1 })
+
+            // Network fully recovers; a later foreground must try again.
+            deferredFails = false
+            requestedUrls.clear()
+            ulink.onStart(owner)
+
+            assertTrue(
+                "a failed deferred check must be retried, not permanently skipped",
+                pumpUntil { deferredCallCount() >= 1 },
+            )
+        } finally {
+            unmockkStatic(InstallReferrerClient::class)
+        }
     }
 }

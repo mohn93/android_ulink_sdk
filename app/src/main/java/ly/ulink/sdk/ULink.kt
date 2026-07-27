@@ -286,6 +286,14 @@ class ULink private constructor(
     private val httpClient = injectedHttpClient ?: HttpClient(config.debug)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    // Serialises the deferred check. The persisted ulink_deferred_checked flag
+    // cannot do this on its own: it is read at the start of the coroutine and
+    // written only after the Install Referrer lookup and the network round trip,
+    // so two overlapping foregrounds would both read false and both POST
+    // /sdk/deferred/match — the server consumes a click per call, so a duplicate
+    // either double-consumes one click or steals the next one.
+    private val deferredCheckInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // Guards against double-registration of ActivityLifecycleCallbacks. setup() can
     // run more than once (bootstrap-retry path in initialize()), and Android does not
     // de-duplicate the same callback instance, so re-registering would multiply
@@ -824,11 +832,17 @@ class ULink private constructor(
     fun checkDeferredLink() {
         // Ensure bootstrap completed before checking deferred links
         ensureBootstrapCompleted()
-        
+
+        // Only one check may be in flight at a time — see deferredCheckInFlight.
+        if (!deferredCheckInFlight.compareAndSet(false, true)) {
+            logDebug("Deferred link check already in progress, skipping")
+            return
+        }
+
         scope.launch(Dispatchers.IO) {
             try {
                 logDebug("Starting deferred link check...")
-                
+
                 if (sharedPreferences.getBoolean("ulink_deferred_checked", false)) {
                     logDebug("Deferred link already checked, skipping")
                     return@launch
@@ -907,14 +921,22 @@ class ULink private constructor(
                     } else {
                         logDebug("No deferred link matched or deepLink is null")
                     }
-                } else {
-                    logWarning("Deferred match API call failed: ${response.statusCode}")
                 }
 
-                sharedPreferences.edit().putBoolean("ulink_deferred_checked", true).apply()
-                logDebug("Deferred link check completed")
+                if (response.isSuccess) {
+                    // Only burn the once-per-install flag when the server actually
+                    // answered. Marking a FAILED request as "checked" would lose the
+                    // deferred link permanently — the outcome this path exists to
+                    // prevent — so a failed check is retried on a later foreground.
+                    sharedPreferences.edit().putBoolean("ulink_deferred_checked", true).apply()
+                    logDebug("Deferred link check completed")
+                } else {
+                    logWarning("Deferred match API call failed: ${response.statusCode} - will retry on a later foreground")
+                }
             } catch (e: Exception) {
                 logError("Error checking deferred link", e)
+            } finally {
+                deferredCheckInFlight.set(false)
             }
         }
     }
@@ -939,18 +961,6 @@ class ULink private constructor(
                     logDebug("App started but bootstrap has not succeeded - retrying bootstrap")
                 }
                 bootstrapSilent()
-
-                // setup() launches the deferred check inside the same try block as
-                // bootstrap(), so a failed cold start skips it entirely. Without
-                // this, a fresh install that hit a transient network error would
-                // lose its deferred deep link permanently. checkDeferredLink() is
-                // guarded by the ulink_deferred_checked flag, so it still runs once.
-                if (bootstrapSucceeded && config.autoCheckDeferredLink) {
-                    if (config.debug) {
-                        logDebug("Bootstrap recovered - running the deferred check skipped at startup")
-                    }
-                    checkDeferredLink()
-                }
             }
 
             if (!bootstrapSucceeded) {
@@ -959,6 +969,22 @@ class ULink private constructor(
                     logDebug("Bootstrap failed - deferring session start")
                 }
                 return@launch
+            }
+
+            // Bootstrap is healthy from here. setup() launches the deferred check
+            // inside the same try block as bootstrap(), so a failed cold start skips
+            // it entirely — and a check whose own request failed leaves the flag
+            // unset. Re-attempt here until it actually completes; checkDeferredLink()
+            // is idempotent (persisted flag + in-flight guard), so a successful check
+            // never runs twice. Reached only when bootstrapSucceeded is true, so
+            // ensureBootstrapCompleted() inside it cannot throw into this coroutine.
+            if (config.autoCheckDeferredLink &&
+                !sharedPreferences.getBoolean("ulink_deferred_checked", false)
+            ) {
+                if (config.debug) {
+                    logDebug("Deferred check not yet completed - running it now")
+                }
+                checkDeferredLink()
             }
 
             startSessionIfNeeded()
