@@ -282,6 +282,18 @@ class BootstrapRetryTest {
     private fun deferredCallCount() = requestedUrls.count { it.endsWith("/sdk/deferred/match") }
 
     /**
+     * Observing the request does NOT mean the deferred coroutine has finished —
+     * it releases its in-flight guard in a finally that runs afterwards. Waiting
+     * on the guard itself keeps the test deterministic on slow CI.
+     */
+    private fun awaitDeferredCheckIdle(ulink: ULink) {
+        val field = ULink::class.java.getDeclaredField("deferredCheckInFlight")
+            .apply { isAccessible = true }
+        val inFlight = field.get(ulink) as java.util.concurrent.atomic.AtomicBoolean
+        assertTrue("deferred check never finished", pumpUntil { !inFlight.get() })
+    }
+
+    /**
      * Overlapping foreground dispatches must not each fire a deferred match.
      * The server consumes a click per call (matched_at), so a duplicate either
      * double-consumes the same click or steals the next one — deep-linking the
@@ -348,6 +360,7 @@ class BootstrapRetryTest {
             val owner = mockk<LifecycleOwner>(relaxed = true)
             ulink.onStart(owner)
             assertTrue("first attempt should fire", pumpUntil { deferredCallCount() >= 1 })
+            awaitDeferredCheckIdle(ulink)
 
             // Network fully recovers; a later foreground must try again.
             deferredFails = false
