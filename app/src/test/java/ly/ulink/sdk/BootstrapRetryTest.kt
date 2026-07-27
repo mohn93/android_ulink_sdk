@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Looper
 import androidx.lifecycle.LifecycleOwner
+import com.android.installreferrer.api.InstallReferrerClient
+import com.android.installreferrer.api.InstallReferrerStateListener
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
 import ly.ulink.sdk.models.ULinkConfig
@@ -183,5 +185,58 @@ class BootstrapRetryTest {
             0,
             bootstrapCallCount(),
         )
+    }
+
+    /**
+     * The deferred check is launched inside setup()'s try block, after bootstrap().
+     * When bootstrap failed, the check was skipped entirely and never revisited —
+     * so a fresh install whose cold start hit a transient network error lost its
+     * deferred deep link permanently, which is the whole feature for that user.
+     */
+    @Test
+    fun `deferred link check runs once a bootstrap retry recovers`() = runTest {
+        // Install Referrer is unavailable in unit tests; resolve it immediately.
+        mockkStatic(InstallReferrerClient::class)
+        val referrerBuilder = mockk<InstallReferrerClient.Builder>(relaxed = true)
+        val referrerClient = mockk<InstallReferrerClient>(relaxed = true)
+        every { InstallReferrerClient.newBuilder(any()) } returns referrerBuilder
+        every { referrerBuilder.build() } returns referrerClient
+        every { referrerClient.startConnection(any()) } answers {
+            firstArg<InstallReferrerStateListener>().onInstallReferrerSetupFinished(
+                InstallReferrerClient.InstallReferrerResponse.FEATURE_NOT_SUPPORTED
+            )
+        }
+
+        val deferredConfig = ULinkConfig(
+            apiKey = "test-api-key",
+            baseUrl = "https://api.test.com",
+            debug = false,
+            enableDeepLinkIntegration = false,
+            autoCheckDeferredLink = true,
+        )
+
+        val ulink = ULink.initialize(mockContext, deferredConfig, mockHttpClient)
+        assertEquals(
+            "a failed cold start cannot have run the deferred check",
+            0,
+            requestedUrls.count { it.endsWith("/sdk/deferred/match") },
+        )
+
+        // Network recovers while the app is backgrounded.
+        bootstrapFails = false
+        requestedUrls.clear()
+
+        ulink.onStart(mockk<LifecycleOwner>(relaxed = true))
+
+        assertTrue(
+            "bootstrap must be retried",
+            pumpUntil { bootstrapCallCount() >= 1 },
+        )
+        assertTrue(
+            "the deferred check must run once bootstrap recovers, not be lost with the failed cold start",
+            pumpUntil { requestedUrls.any { url -> url.endsWith("/sdk/deferred/match") } },
+        )
+
+        unmockkStatic(InstallReferrerClient::class)
     }
 }

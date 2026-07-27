@@ -939,6 +939,18 @@ class ULink private constructor(
                     logDebug("App started but bootstrap has not succeeded - retrying bootstrap")
                 }
                 bootstrapSilent()
+
+                // setup() launches the deferred check inside the same try block as
+                // bootstrap(), so a failed cold start skips it entirely. Without
+                // this, a fresh install that hit a transient network error would
+                // lose its deferred deep link permanently. checkDeferredLink() is
+                // guarded by the ulink_deferred_checked flag, so it still runs once.
+                if (bootstrapSucceeded && config.autoCheckDeferredLink) {
+                    if (config.debug) {
+                        logDebug("Bootstrap recovered - running the deferred check skipped at startup")
+                    }
+                    checkDeferredLink()
+                }
             }
 
             if (!bootstrapSucceeded) {
@@ -948,7 +960,7 @@ class ULink private constructor(
                 }
                 return@launch
             }
-            
+
             startSessionIfNeeded()
         }
     }
