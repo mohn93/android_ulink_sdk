@@ -14,8 +14,10 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
@@ -138,14 +140,14 @@ class ULink private constructor(
                     // Bootstrap previously failed — retry on this caller.
                     instance.bootstrapCompleted = false
                     instance.bootstrapSucceeded = false
-                    instance.setup()
+                    instance.setupOrMarkFailed()
                     return@withLock instance
                 }
 
                 // Create new instance - protected by mutex
                 val newInstance = ULink(context.applicationContext, config, httpClient)
                 INSTANCE = newInstance
-                newInstance.setup()
+                newInstance.setupOrMarkFailed()
                 newInstance
             }
         }
@@ -319,7 +321,13 @@ class ULink private constructor(
     
     // Session management
     private var currentSessionId: String? = null
-    private var bootstrapCompleted = false
+    // Backed by a StateFlow so work that requires a completed bootstrap can await
+    // it rather than fail outright — see awaitBootstrap(). Terminal state only:
+    // true means bootstrap finished, successfully or not.
+    private val bootstrapCompletedState = MutableStateFlow(false)
+    private var bootstrapCompleted: Boolean
+        get() = bootstrapCompletedState.value
+        set(value) { bootstrapCompletedState.value = value }
     private var bootstrapSucceeded = false
     private var pendingSessionStart = false
     
@@ -615,18 +623,32 @@ class ULink private constructor(
     private var lastLinkData: ULinkResolvedData? = null
     
     /**
+     * Publishes a log entry to the public logStream.
+     *
+     * Deliberately synchronous. Routing this through scope.launch tied log
+     * delivery to the SDK's own coroutine scope, so anything logged after
+     * dispose() cancelled that scope — including dispose()'s own "SDK disposed"
+     * line — was written to Android's Log but never reached a host collecting
+     * logStream, and every line cost a dispatch that reordered entries relative
+     * to the calls that wrote them. The stream is buffered (replay 50 + 100
+     * spare), so tryEmit only declines when a subscriber has fallen 150 entries
+     * behind, and dropping diagnostics is the right outcome there.
+     */
+    private fun emitLog(entry: ULinkLogEntry) {
+        _logStream.tryEmit(entry)
+    }
+
+    /**
      * Logs a debug message to both Android Log and the log stream
      */
     private fun logDebug(message: String, tag: String = TAG) {
         if (config.debug) {
             Log.d(tag, message)
-            scope.launch {
-                _logStream.emit(ULinkLogEntry(
-                    level = ULinkLogEntry.LEVEL_DEBUG,
-                    tag = tag,
-                    message = message
-                ))
-            }
+            emitLog(ULinkLogEntry(
+                level = ULinkLogEntry.LEVEL_DEBUG,
+                tag = tag,
+                message = message
+            ))
         }
     }
     
@@ -636,13 +658,11 @@ class ULink private constructor(
     private fun logInfo(message: String, tag: String = TAG) {
         if (config.debug) {
             Log.i(tag, message)
-            scope.launch {
-                _logStream.emit(ULinkLogEntry(
-                    level = ULinkLogEntry.LEVEL_INFO,
-                    tag = tag,
-                    message = message
-                ))
-            }
+            emitLog(ULinkLogEntry(
+                level = ULinkLogEntry.LEVEL_INFO,
+                tag = tag,
+                message = message
+            ))
         }
     }
     
@@ -652,13 +672,11 @@ class ULink private constructor(
     private fun logWarning(message: String, tag: String = TAG) {
         Log.w(tag, message)
         if (config.debug) {
-            scope.launch {
-                _logStream.emit(ULinkLogEntry(
-                    level = ULinkLogEntry.LEVEL_WARNING,
-                    tag = tag,
-                    message = message
-                ))
-            }
+            emitLog(ULinkLogEntry(
+                level = ULinkLogEntry.LEVEL_WARNING,
+                tag = tag,
+                message = message
+            ))
         }
     }
     
@@ -673,13 +691,11 @@ class ULink private constructor(
         }
         if (config.debug) {
             val fullMessage = if (throwable != null) "$message: ${throwable.message}" else message
-            scope.launch {
-                _logStream.emit(ULinkLogEntry(
-                    level = ULinkLogEntry.LEVEL_ERROR,
-                    tag = tag,
-                    message = fullMessage
-                ))
-            }
+            emitLog(ULinkLogEntry(
+                level = ULinkLogEntry.LEVEL_ERROR,
+                tag = tag,
+                message = fullMessage
+            ))
         }
     }
     
@@ -690,6 +706,26 @@ class ULink private constructor(
      * Network failures during bootstrap are non-fatal — the SDK will initialize
      * in degraded mode and retry bootstrap on next app foreground via lifecycle observer.
      */
+    /**
+     * Runs setup() and guarantees bootstrap ends in a terminal state.
+     *
+     * awaitBootstrap() parks callers until bootstrap reports done. setup()
+     * registers the ActivityLifecycleCallbacks before it touches storage, so a
+     * throw from the storage work in between (a corrupt persisted entry, for
+     * example) would leave deep links arriving on live callbacks with nothing
+     * left to ever mark bootstrap finished — they would park for the life of
+     * the process. Marking it terminal here keeps that a fast, logged failure.
+     */
+    private suspend fun setupOrMarkFailed() {
+        try {
+            setup()
+        } catch (e: Exception) {
+            bootstrapSucceeded = false
+            bootstrapCompleted = true
+            throw e
+        }
+    }
+
     private suspend fun setup() {
         // Register lifecycle observer
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
@@ -828,11 +864,11 @@ class ULink private constructor(
     /**
      * Manually checks for deferred deep links
      * This is useful when autoCheckDeferredLink is disabled in config
+     *
+     * Safe to call before the SDK has finished starting up: the check waits for
+     * bootstrap rather than failing (see the bootstrap wait inside).
      */
     fun checkDeferredLink() {
-        // Ensure bootstrap completed before checking deferred links
-        ensureBootstrapCompleted()
-
         // Only one check may be in flight at a time — see deferredCheckInFlight.
         if (!deferredCheckInFlight.compareAndSet(false, true)) {
             logDebug("Deferred link check already in progress, skipping")
@@ -841,6 +877,17 @@ class ULink private constructor(
 
         scope.launch(Dispatchers.IO) {
             try {
+                // Wait for bootstrap instead of rejecting the call. The
+                // documented pattern when autoCheckDeferredLink is off is for
+                // the host to run this at startup, which races the bootstrap
+                // round-trip; the deferred match is once per install, so losing
+                // it to that race loses the install's attribution for good.
+                // ensureBootstrapCompleted still rejects a bootstrap that
+                // finished unsuccessfully — logged below, retried on a later
+                // foreground, exactly as a failed match is.
+                awaitBootstrap()
+                ensureBootstrapCompleted()
+
                 logDebug("Starting deferred link check...")
 
                 if (sharedPreferences.getBoolean("ulink_deferred_checked", false)) {
@@ -933,6 +980,9 @@ class ULink private constructor(
                 } else {
                     logWarning("Deferred match API call failed: ${response.statusCode} - will retry on a later foreground")
                 }
+            } catch (e: CancellationException) {
+                // Disposal mid-wait is normal shutdown, not a check failure.
+                throw e
             } catch (e: Exception) {
                 logError("Error checking deferred link", e)
             } finally {
@@ -1221,6 +1271,29 @@ class ULink private constructor(
     }
     
     /**
+     * Suspends until bootstrap reaches a terminal state (succeeded or failed).
+     *
+     * setup() registers the ActivityLifecycleCallbacks before it awaits the
+     * bootstrap round-trip, so an app cold-started BY a link reaches
+     * handleDeepLink while bootstrap is still in flight. resolveLink requires a
+     * completed bootstrap, so without this wait the launch link — the most
+     * common deep link there is — threw ULinkInitializationError and was lost:
+     * handleActivityIntent has already marked the intent handled, and nothing
+     * retries it.
+     *
+     * Returns as soon as bootstrap is done; callers still go through
+     * ensureBootstrapCompleted, which fails a bootstrap that completed
+     * unsuccessfully (offline cold start, where resolution would fail anyway).
+     */
+    private suspend fun awaitBootstrap() {
+        if (bootstrapCompleted) return
+        if (config.debug) {
+            logDebug("Waiting for bootstrap to complete before resolving")
+        }
+        bootstrapCompletedState.first { it }
+    }
+
+    /**
      * Bootstrap guard - ensures bootstrap has completed successfully before allowing SDK operations.
      * 
      * Call this at the start of any method that requires the SDK to be fully initialized.
@@ -1388,6 +1461,7 @@ class ULink private constructor(
         
         scope.launch {
             try {
+                awaitBootstrap()
                 val resolvedData = resolveLink(uri.toString())
                 if (resolvedData.success && resolvedData.data != null) {
                     val linkData = ULinkResolvedData.fromJsonObject(resolvedData.data)
@@ -1426,6 +1500,10 @@ class ULink private constructor(
                         logWarning("Failed to resolve link: ${resolvedData.error}")
                     }
                 }
+            } catch (e: CancellationException) {
+                // awaitBootstrap is a long-lived suspension point, so the SDK
+                // being disposed mid-wait is normal shutdown, not a link failure.
+                throw e
             } catch (e: Exception) {
                 if (config.debug) {
                     logError("Failed to handle deep link", e)
@@ -2321,8 +2399,17 @@ class ULink private constructor(
         listenerJobs.forEach { it.cancel() }
         listenerJobs.clear()
 
-        // End session and cancel scope
-        scope.launch {
+        // End session and cancel scope.
+        //
+        // NonCancellable detaches this from the scope's job, so cancelling the
+        // scope on the next line does not kill it. A plain scope.launch here was
+        // still queued when cancel() ran, so the body never executed and the
+        // session was never ended — every disposed session was left dangling.
+        //
+        // Best effort by design: dispose() is not suspend and does not block on
+        // the round-trip, so a process dying immediately after can still cut it
+        // short.
+        scope.launch(NonCancellable) {
             endSession()
         }
         scope.cancel()
@@ -2332,6 +2419,17 @@ class ULink private constructor(
         if (config.enableDeepLinkIntegration) {
             (context.applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(this)
             activityCallbacksRegistered = false
+        }
+
+        // Drop the singleton if it is still us. The scope cancelled above never
+        // comes back, so leaving INSTANCE set would let initialize()'s fast path
+        // hand this dead instance to the next caller — bootstrapSucceeded is
+        // still true — and every scope-dispatched operation (deep links,
+        // sessions, deferred checks) would silently no-op with no error at all.
+        // Clearing it makes the next initialize() build a working instance.
+        // Identity-guarded so a newer instance is never clobbered.
+        if (INSTANCE === this) {
+            INSTANCE = null
         }
 
         if (config.debug) {
