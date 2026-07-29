@@ -117,6 +117,13 @@ public class MyApplication extends Application {
 
 The SDK provides Java-friendly listener interfaces as an alternative to Kotlin Flows:
 
+> **With `enableDeepLinkIntegration = true`, two requirements apply to the activity that declares your
+> deep-link `<intent-filter>`.** The SDK reads `activity.intent` when that activity resumes, so it must
+> (1) call `setIntent(intent)` inside `onNewIntent`, and (2) not clear or replace the intent
+> (`intent.setData(null)`, `setIntent(new Intent(...))`) before the SDK has processed it. Missing either
+> stops links from arriving, with no error. See the "Handle Deep Links in Your Activity" section of the
+> [README](README.md) for the details and the reasoning.
+
 ```java
 import ly.ulink.sdk.ULink;
 import ly.ulink.sdk.listeners.OnLinkListener;
