@@ -195,6 +195,53 @@ public class MyApplication extends Application {
 
 With `enableDeepLinkIntegration = true` in your config, the SDK automatically handles deep links.
 
+The SDK reads `activity.intent` when your activity resumes. That puts two requirements on the activity
+that declares the deep-link `<intent-filter>` — usually your launcher activity, but whichever one Android
+delivers the `ACTION_VIEW` intent to. Miss either and links stop arriving, silently.
+
+**1. Call `setIntent(intent)` in `onNewIntent`.**
+
+```kotlin
+override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent) // required: the SDK reads activity.intent on resume
+}
+```
+
+Android delivers a link that arrives at an already-running activity to `onNewIntent` only — it does not
+update `getIntent()`. Without `setIntent`, the SDK keeps re-reading the stale launch intent and **no link
+is ever emitted** — not just repeats, but every link after the initial launch. Required for
+`singleTop`, `singleTask`, and `singleInstance`; harmless on the default `standard` launch mode, so add
+it unconditionally.
+
+**2. Do not clear or replace the intent.**
+
+A common guard against re-handling a link on rotation is to consume the intent:
+
+```kotlin
+// Do NOT do this with automatic integration enabled
+intent.data = null
+setIntent(Intent(intent))
+```
+
+`onNewIntent` runs *before* `onResume`, so this clears the data before the SDK ever sees it. Links then
+work on cold start (where the activity is created with the intent intact) and silently stop working
+whenever the activity is still alive — the app was backgrounded with home or recents rather than closed.
+
+You do not need that guard for ULink: the SDK marks each intent it has processed, so a configuration
+change or a return to the foreground never re-emits the same link.
+
+Your own code is a different matter — `onCreate` does run again on rotation, with the same intent, so if
+you read the link there you will handle it twice. That is a real problem and worth guarding. Keep the
+guard in your own state though (a handled flag, a `SavedStateHandle` entry, a ViewModel), rather than
+mutating `activity.intent`, which is shared with every other library that reads it. If you would rather
+consume the intent, use Option B below and call `ulink.handleDeepLink(uri)` yourself.
+
+**Emission contract:** every link open emits, including the same URL repeatedly. The SDK dedupes only
+re-delivery of a single intent — resuming from the launcher or recents does not re-emit the last link —
+never by URL. If your UI should not react twice to identical consecutive links, apply
+`distinctUntilChanged()` on your side.
+
 **Kotlin:**
 
 ```kotlin
@@ -207,8 +254,13 @@ class MainActivity : AppCompatActivity() {
 
         ulink = ULink.getInstance()
 
-        // Just listen to the streams - no manual intent handling needed!
+        // Just listen to the streams - no manual link resolution needed
         observeDeepLinks()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent) // required - see above
     }
 
     private fun observeDeepLinks() {
@@ -257,6 +309,12 @@ public class MainActivity extends AppCompatActivity {
             Log.d("ULink", "Unified link: " + data.getSlug());
             handleDeepLink(data);
         });
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent); // required - see above
     }
 
     private void handleDeepLink(ULinkResolvedData data) {
