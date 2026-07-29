@@ -229,10 +229,13 @@ work on cold start (where the activity is created with the intent intact) and si
 whenever the activity is still alive — the app was backgrounded with home or recents rather than closed.
 
 You do not need that guard for ULink: the SDK marks each intent it has processed, so a configuration
-change or a return to the foreground never re-emits the same link. If your app needs the guard for its
-own routing, keep the state in your own code rather than mutating `activity.intent`, which every library
-reading the intent also depends on. If you would rather consume the intent, use Option B below and call
-`ulink.handleDeepLink(uri)` yourself.
+change or a return to the foreground never re-emits the same link.
+
+Your own code is a different matter — `onCreate` does run again on rotation, with the same intent, so if
+you read the link there you will handle it twice. That is a real problem and worth guarding. Keep the
+guard in your own state though (a handled flag, a `SavedStateHandle` entry, a ViewModel), rather than
+mutating `activity.intent`, which is shared with every other library that reads it. If you would rather
+consume the intent, use Option B below and call `ulink.handleDeepLink(uri)` yourself.
 
 **Emission contract:** every link open emits, including the same URL repeatedly. The SDK dedupes only
 re-delivery of a single intent — resuming from the launcher or recents does not re-emit the last link —
