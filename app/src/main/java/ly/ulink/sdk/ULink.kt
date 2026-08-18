@@ -1013,12 +1013,21 @@ class ULink private constructor(
             logDebug("App started - starting session")
         }
         scope.launch {
-            // Retry whenever bootstrap has not SUCCEEDED — this covers both
-            // "never completed" and "completed but failed". Keying off
-            // bootstrapCompleted made this unreachable, because a failed
-            // bootstrap in setup() sets bootstrapCompleted = true, so a single
-            // transient failure at cold start left the SDK degraded for the
-            // whole process lifetime.
+            // The cold-start bootstrap from setup() is a multi-second network
+            // call and is often still IN FLIGHT when the first activity
+            // foregrounds. Wait for it to reach a terminal state before deciding
+            // to retry — otherwise `!bootstrapSucceeded` is true simply because
+            // the initial attempt hasn't returned yet, and we fire a duplicate
+            // bootstrap that creates a second session. Bounded by bootstrap()'s
+            // own timeouts and runs off the UI thread.
+            if (!bootstrapCompleted) {
+                bootstrapCompletedState.first { it }
+            }
+
+            // Retry only a bootstrap that actually FAILED (terminal, not in
+            // flight). This still covers "completed but failed": a transient
+            // failure at cold start recovers here on the next foreground rather
+            // than leaving the SDK degraded for the process lifetime.
             if (!bootstrapSucceeded) {
                 if (config.debug) {
                     logDebug("App started but bootstrap has not succeeded - retrying bootstrap")
