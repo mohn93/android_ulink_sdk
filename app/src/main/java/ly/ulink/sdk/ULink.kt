@@ -1300,25 +1300,11 @@ class ULink private constructor(
      */
     private suspend fun awaitBootstrap() {
         if (bootstrapCompleted) return
-        // Cached-token bypass: a returning install already holds server-issued
-        // credentials, so operations can run immediately instead of parking on a
-        // fresh bootstrap round-trip that may stall for the full read timeout on
-        // a poor connection. Bootstrap keeps running in the background to refresh.
-        if (hasCachedInstallation()) return
         if (config.debug) {
             logDebug("Waiting for bootstrap to complete before resolving")
         }
         bootstrapCompletedState.first { it }
     }
-
-    /**
-     * A returning install has a cached installation token from a prior successful
-     * bootstrap. When present, SDK operations authenticate with it directly and
-     * must not be blocked on / rejected by the current (possibly slow or failing)
-     * bootstrap. Only a brand-new install with no cached token truly requires a
-     * successful bootstrap before its first operation.
-     */
-    private fun hasCachedInstallation(): Boolean = getInstallationToken() != null
 
     /**
      * Bootstrap guard - ensures bootstrap has completed successfully before allowing SDK operations.
@@ -1328,11 +1314,6 @@ class ULink private constructor(
      * @throws ULinkInitializationError if bootstrap hasn't completed or failed
      */
     private fun ensureBootstrapCompleted() {
-        // Cached-token bypass: a returning install can operate on its stored
-        // credentials even if the current bootstrap has not (yet) succeeded, so
-        // a slow/failed refresh never blocks resolution for an existing user.
-        if (hasCachedInstallation()) return
-
         if (!bootstrapCompleted) {
             logError("SDK method called before initialization complete")
             throw ULinkInitializationError.bootstrapFailed(

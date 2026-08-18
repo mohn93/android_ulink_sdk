@@ -189,6 +189,12 @@ public class MyApplication extends Application {
 }
 ```
 
+> **Do not block your UI on initialization.** `initialize()` performs a network
+> check-in (session, token refresh, metadata) on every launch, so run it
+> fire-and-forget and react to links via the streams/listeners — never gate your
+> splash or first screen on it. See [INTEGRATION.md](INTEGRATION.md) for the
+> correct patterns and how the SDK recovers from transient network failures.
+
 ### 2. Handle Deep Links in Your Activity
 
 #### Option A: Automatic Deep Link Integration (Recommended)
