@@ -5,6 +5,8 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
@@ -330,6 +332,14 @@ class ULink private constructor(
         set(value) { bootstrapCompletedState.value = value }
     private var bootstrapSucceeded = false
     private var pendingSessionStart = false
+
+    // Connectivity-regained bootstrap retry. Registered in setup(); fires a
+    // single background bootstrap retry when the device gets a network again, so
+    // a cold start that failed offline recovers without waiting for the next
+    // app foreground. Guarded so overlapping onAvailable callbacks (one per
+    // network) never stack concurrent bootstraps — see retryBootstrapOnConnectivity().
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val connectivityRetryInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     
     /**
      * Current session state
@@ -729,7 +739,10 @@ class ULink private constructor(
     private suspend fun setup() {
         // Register lifecycle observer
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
-        
+
+        // Retry bootstrap the moment connectivity returns, not only on foreground.
+        registerNetworkCallbackIfNeeded()
+
         // Register activity lifecycle callbacks for automatic deep link integration.
         // Guarded so a repeated setup() (bootstrap retry) does not register twice.
         if (config.enableDeepLinkIntegration && !activityCallbacksRegistered) {
@@ -1000,12 +1013,21 @@ class ULink private constructor(
             logDebug("App started - starting session")
         }
         scope.launch {
-            // Retry whenever bootstrap has not SUCCEEDED — this covers both
-            // "never completed" and "completed but failed". Keying off
-            // bootstrapCompleted made this unreachable, because a failed
-            // bootstrap in setup() sets bootstrapCompleted = true, so a single
-            // transient failure at cold start left the SDK degraded for the
-            // whole process lifetime.
+            // The cold-start bootstrap from setup() is a multi-second network
+            // call and is often still IN FLIGHT when the first activity
+            // foregrounds. Wait for it to reach a terminal state before deciding
+            // to retry — otherwise `!bootstrapSucceeded` is true simply because
+            // the initial attempt hasn't returned yet, and we fire a duplicate
+            // bootstrap that creates a second session. Bounded by bootstrap()'s
+            // own timeouts and runs off the UI thread.
+            if (!bootstrapCompleted) {
+                bootstrapCompletedState.first { it }
+            }
+
+            // Retry only a bootstrap that actually FAILED (terminal, not in
+            // flight). This still covers "completed but failed": a transient
+            // failure at cold start recovers here on the next foreground rather
+            // than leaving the SDK degraded for the process lifetime.
             if (!bootstrapSucceeded) {
                 if (config.debug) {
                     logDebug("App started but bootstrap has not succeeded - retrying bootstrap")
@@ -1337,7 +1359,68 @@ class ULink private constructor(
             bootstrapCompleted = true
         }
     }
-    
+
+    /**
+     * Registers a default-network callback so a cold start that failed while
+     * offline retries as soon as connectivity returns, instead of staying
+     * degraded until the next app foreground. Idempotent and best-effort: a
+     * repeated setup() (bootstrap retry) will not double-register, and any
+     * platform failure is swallowed (the foreground retry still applies).
+     */
+    private fun registerNetworkCallbackIfNeeded() {
+        if (networkCallback != null) return
+        val connectivityManager =
+            context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                handleNetworkAvailable()
+            }
+        }
+        try {
+            connectivityManager.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            if (config.debug) {
+                logError("Failed to register network callback", e)
+            }
+        }
+    }
+
+    /**
+     * Invoked when the device regains a default network. Visible for testing so
+     * the retry path can be exercised without a real ConnectivityManager.
+     */
+    internal fun handleNetworkAvailable() {
+        // Nothing to do once bootstrap has succeeded; avoids waking a healthy SDK.
+        if (bootstrapSucceeded) return
+        scope.launch { retryBootstrapOnConnectivity() }
+    }
+
+    /**
+     * Retries bootstrap once after connectivity returns. Guards:
+     * - only after the initial attempt reached a terminal state (bootstrapCompleted),
+     *   so this never races a still-in-flight cold-start bootstrap;
+     * - a single in-flight retry at a time, so overlapping onAvailable callbacks
+     *   (one per network) don't stack concurrent bootstraps.
+     */
+    private suspend fun retryBootstrapOnConnectivity() {
+        if (bootstrapSucceeded) return
+        if (!bootstrapCompleted) return
+        if (!connectivityRetryInFlight.compareAndSet(false, true)) return
+        try {
+            if (config.debug) {
+                logDebug("Connectivity regained - retrying bootstrap")
+            }
+            bootstrapSilent()
+            if (bootstrapSucceeded && pendingSessionStart) {
+                pendingSessionStart = false
+                startSessionIfNeeded()
+            }
+        } finally {
+            connectivityRetryInFlight.set(false)
+        }
+    }
+
     /**
      * Build bootstrap request body
      */
@@ -2414,6 +2497,16 @@ class ULink private constructor(
         }
         scope.cancel()
         ProcessLifecycleOwner.get().lifecycle.removeObserver(this)
+
+        // Unregister the connectivity callback so a disposed instance stops
+        // receiving network events.
+        networkCallback?.let { callback ->
+            runCatching {
+                (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+                    ?.unregisterNetworkCallback(callback)
+            }
+            networkCallback = null
+        }
 
         // Unregister activity lifecycle callbacks
         if (config.enableDeepLinkIntegration) {

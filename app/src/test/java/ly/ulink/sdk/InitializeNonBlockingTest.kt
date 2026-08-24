@@ -2,9 +2,16 @@ package ly.ulink.sdk
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Looper
+import androidx.lifecycle.LifecycleOwner
 import io.mockk.*
+import java.util.concurrent.atomic.AtomicInteger
+import org.robolectric.Shadows.shadowOf
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
@@ -214,5 +221,79 @@ class InitializeNonBlockingTest {
             initJob.cancelAndJoin()
             assertTrue(initJob.isCancelled)
         }
+    }
+
+    /**
+     * The cold-start bootstrap from setup() is a multi-second network call and is
+     * usually still IN FLIGHT when the first activity foregrounds and onStart()
+     * fires. onStart retries on `!bootstrapSucceeded`, which is true simply
+     * because the initial attempt hasn't returned yet — so it used to fire a
+     * DUPLICATE bootstrap, creating a second session on every cold start. onStart
+     * must instead wait for the in-flight bootstrap and retry only if it failed.
+     */
+    // Plain Robolectric test (no runTest): the cold-start bootstrap must be held
+    // IN FLIGHT on a real Dispatchers.IO thread while we foreground the app, which
+    // the runTest virtual scheduler can't model. We drive the real main looper and
+    // poll in real time, exactly like the app at runtime.
+    @Test(timeout = 20_000L)
+    fun `foregrounding while the cold-start bootstrap is in flight does not fire a duplicate`() {
+        val responseGate = CompletableDeferred<HttpResponse>()
+        val bootstrapCalls = AtomicInteger(0)
+        coEvery { mockHttpClient.postJson(any(), any(), any()) } coAnswers {
+            val url = firstArg<String>()
+            if (url.endsWith("/sdk/bootstrap")) {
+                bootstrapCalls.incrementAndGet()
+                responseGate.await() // hold the cold-start bootstrap in flight
+            } else {
+                HttpResponse(statusCode = 200, body = "{}", isSuccess = true)
+            }
+        }
+
+        // Launch init on the main dispatcher (ProcessLifecycleOwner.get() requires
+        // the main thread); bootstrap then hops to Dispatchers.IO and blocks.
+        val driverScope = CoroutineScope(Dispatchers.Main)
+        driverScope.launch { ULink.initialize(mockContext, config, mockHttpClient) }
+
+        assertTrue("cold-start bootstrap should be in flight", pumpUntil { bootstrapCalls.get() == 1 })
+
+        // Foreground the app WHILE the cold-start bootstrap is still in flight.
+        ULink.getInstance().onStart(mockk<LifecycleOwner>(relaxed = true))
+        // Give a (wrongful) duplicate a chance to fire before asserting it did not.
+        pumpUntil(timeoutMs = 1_500) { bootstrapCalls.get() > 1 }
+        assertEquals(
+            "onStart must not fire a second bootstrap while the first is in flight",
+            1,
+            bootstrapCalls.get(),
+        )
+
+        // Release the gate; the single bootstrap completes successfully and onStart
+        // resumes — it must NOT retry, since bootstrap now succeeded.
+        responseGate.complete(
+            HttpResponse(
+                statusCode = 200,
+                body = """{"installationId":"i","sessionId":"s"}""",
+                isSuccess = true,
+                headers = mapOf("x-installation-token" to "t"),
+            ),
+        )
+        pumpUntil(timeoutMs = 2_000) { bootstrapCalls.get() > 1 }
+        assertEquals(
+            "still exactly one bootstrap after a successful cold start",
+            1,
+            bootstrapCalls.get(),
+        )
+
+        driverScope.cancel()
+    }
+
+    private fun pumpUntil(timeoutMs: Long = 5_000, condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (condition()) return true
+            Thread.sleep(20)
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        return condition()
     }
 }
