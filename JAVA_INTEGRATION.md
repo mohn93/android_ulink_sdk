@@ -25,7 +25,7 @@ Add the dependency to your `app/build.gradle`:
 
 ```gradle
 dependencies {
-    implementation 'ly.ulink:ulink-sdk:1.2.0'
+    implementation 'ly.ulink:ulink-sdk:1.2.3'
 }
 ```
 
