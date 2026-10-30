@@ -136,9 +136,9 @@ afterEvaluate {
                 artifact(androidJavadocJar)
                 
                 pom {
-                    name = 'ULink Android SDK'
+                    name = 'Ulinkly Android SDK'
                     description = 'Android SDK for creating and managing dynamic links with ULink'
-                    url = 'https://github.com/mohn93/android_ulink_sdk'
+                    url = 'https://ulink.ly/framework/android-kotlin'
                     
                     licenses {
                         license {
