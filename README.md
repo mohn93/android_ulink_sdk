@@ -1,6 +1,8 @@
-# ULink Android SDK
+# Ulinkly Android SDK
 
-The ULink Android SDK provides a comprehensive solution for creating, managing, and tracking dynamic links in Android applications. This SDK offers the same functionality as the Flutter ULink SDK, allowing you to create dynamic links, handle deep links, track user sessions, and manage installations.
+[Android (Kotlin) deep linking guide](https://ulink.ly/framework/android-kotlin) | [Docs](https://docs.ulink.ly/getting-started/android) | [Migrating from Firebase Dynamic Links](https://ulink.ly/migrate/firebase-dynamic-links)
+
+The official Android SDK for [Ulinkly](https://ulink.ly), a deep linking platform and Firebase Dynamic Links replacement. It provides a comprehensive solution for creating, managing, and tracking dynamic links in Android applications. This SDK offers the same functionality as the Flutter ULink SDK, allowing you to create dynamic links, handle deep links, track user sessions, and manage installations.
 
 ## ULink SDKs
 
