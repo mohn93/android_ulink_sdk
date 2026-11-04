@@ -286,6 +286,70 @@ class InitializeNonBlockingTest {
         driverScope.cancel()
     }
 
+    /**
+     * Java entry points called from Application.onCreate run on the main thread,
+     * before the first Activity is created. If they defer initialize() to a later
+     * looper turn (plain Dispatchers.Main), the first Activity's getInstance()
+     * throws and the launch deep link is missed because the activity lifecycle
+     * callbacks are not registered yet. With Main.immediate, INSTANCE and the
+     * callbacks must be in place when the call returns, without pumping the looper.
+     */
+    @Test(timeout = 20_000L)
+    fun `initializeAsync on the main thread sets the instance before returning`() {
+        val app = mockApplication()
+        val responseGate = CompletableDeferred<HttpResponse>()
+        coEvery { mockHttpClient.postJson(any(), any(), any()) } coAnswers { responseGate.await() }
+        val linkConfig = config.copy(enableDeepLinkIntegration = true)
+
+        val future = ULink.initializeAsync(app, linkConfig, mockHttpClient)
+
+        // No looper pumping: this is the state the first Activity would observe.
+        val instance = ULink.getInstance()
+        verify(exactly = 1) { app.registerActivityLifecycleCallbacks(instance) }
+        assertFalse("future completes only after bootstrap", future.isDone)
+
+        responseGate.complete(okBootstrap())
+        assertTrue("future should complete after bootstrap", pumpUntil { future.isDone })
+        assertSame(instance, future.get())
+    }
+
+    @Test(timeout = 20_000L)
+    fun `callback initialize on the main thread sets the instance before returning`() {
+        val app = mockApplication()
+        val responseGate = CompletableDeferred<HttpResponse>()
+        val linkConfig = config.copy(enableDeepLinkIntegration = true)
+
+        // The callback overload takes no httpClient, so gate the SDK-constructed one.
+        mockkConstructor(HttpClient::class)
+        coEvery { anyConstructed<HttpClient>().postJson(any(), any(), any()) } coAnswers { responseGate.await() }
+
+        var succeeded: ULink? = null
+        ULink.initialize(app, linkConfig, { succeeded = it })
+
+        val instance = ULink.getInstance()
+        verify(exactly = 1) { app.registerActivityLifecycleCallbacks(instance) }
+        assertNull("onSuccess runs only after bootstrap", succeeded)
+
+        responseGate.complete(okBootstrap())
+        assertTrue("onSuccess should run after bootstrap", pumpUntil { succeeded != null })
+        assertSame(instance, succeeded)
+        unmockkConstructor(HttpClient::class)
+    }
+
+    private fun mockApplication(): android.app.Application {
+        val app = mockk<android.app.Application>(relaxed = true)
+        every { app.applicationContext } returns app
+        every { app.getSharedPreferences(any(), any()) } returns mockSharedPreferences
+        return app
+    }
+
+    private fun okBootstrap() = HttpResponse(
+        statusCode = 200,
+        body = """{"installationId":"i","sessionId":"s"}""",
+        isSuccess = true,
+        headers = mapOf("x-installation-token" to "t"),
+    )
+
     private fun pumpUntil(timeoutMs: Long = 5_000, condition: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {

@@ -93,7 +93,9 @@ class ULink private constructor(
          * Example:
          * ```kotlin
          * class MyApplication : Application() {
-         *     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+         *     // Main.immediate starts initialize() before onCreate returns, so the SDK is
+         *     // ready for the first Activity and its launch deep link.
+         *     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
          *
          *     override fun onCreate() {
          *         super.onCreate()
@@ -174,6 +176,11 @@ class ULink private constructor(
          *
          * This is the recommended way to initialize the SDK from Java code.
          *
+         * When called on the main thread (for example from `Application.onCreate`),
+         * the singleton is created and the lifecycle callbacks are registered before
+         * this method returns, so [getInstance] works in the first Activity and a
+         * launch deep link is handled. The future completes after bootstrap.
+         *
          * Example usage in Java:
          * ```java
          * // ULinkConfig uses @JvmOverloads, so Java arguments are positional in
@@ -212,7 +219,13 @@ class ULink private constructor(
             httpClient: HttpClient? = null
         ): java.util.concurrent.CompletableFuture<ULink> {
             val future = java.util.concurrent.CompletableFuture<ULink>()
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            // Main.immediate runs the coroutine inline when called on the main thread
+            // (e.g. from Application.onCreate), so INSTANCE is set and the lifecycle
+            // callbacks are registered before this call returns, ahead of the first
+            // Activity. It only yields at the bootstrap network call. Plain
+            // Dispatchers.Main deferred all of it to a later looper turn, after the
+            // launch Activity was already created and resumed.
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate).launch {
                 try {
                     val instance = initialize(context, config, httpClient)
                     future.complete(instance)
@@ -228,6 +241,10 @@ class ULink private constructor(
          * Alternative to [initializeAsync] for developers who prefer callbacks.
          *
          * **Threading:** Both callbacks are invoked on the main (UI) thread.
+         * When called on the main thread, the singleton is created and the lifecycle
+         * callbacks are registered before this method returns, so [getInstance] works
+         * in the first Activity. If the SDK is already initialized, [onSuccess] may be
+         * invoked before this method returns.
          *
          * **Error Handling:** If [onError] is not provided and initialization fails,
          * the error is logged but not re-thrown, preventing host app crashes.
@@ -273,7 +290,13 @@ class ULink private constructor(
             onSuccess: (ULink) -> Unit,
             onError: ((Throwable) -> Unit)? = null
         ) {
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            // Main.immediate runs the coroutine inline when called on the main thread
+            // (e.g. from Application.onCreate), so INSTANCE is set and the lifecycle
+            // callbacks are registered before this call returns, ahead of the first
+            // Activity. It only yields at the bootstrap network call. Plain
+            // Dispatchers.Main deferred all of it to a later looper turn, after the
+            // launch Activity was already created and resumed.
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate).launch {
                 try {
                     val instance = initialize(context, config)
                     onSuccess(instance)
