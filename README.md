@@ -150,7 +150,9 @@ import ly.ulink.sdk.ULink
 import ly.ulink.sdk.models.ULinkConfig
 
 class MyApplication : Application() {
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    // Main.immediate starts initialize() before onCreate returns, so the SDK is
+    // ready for the first Activity and its launch deep link.
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
         super.onCreate()
