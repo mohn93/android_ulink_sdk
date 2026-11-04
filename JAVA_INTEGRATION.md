@@ -40,19 +40,23 @@ import ly.ulink.sdk.ULink;
 import ly.ulink.sdk.models.ULinkConfig;
 import android.app.Application;
 import android.util.Log;
+import java.util.Collections;
 
 public class MyApplication extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
 
+        // ULinkConfig uses @JvmOverloads: arguments are positional in declaration
+        // order, and omitted trailing arguments keep their defaults. The minimal form
+        // is new ULinkConfig("your-api-key").
         ULinkConfig config = new ULinkConfig(
             "your-api-key",           // API key
             "https://api.ulink.ly",   // Base URL
             true,                      // Debug mode
             true,                      // Enable deep link integration
             true,                      // Persist last link data
-            86400,                     // Last link TTL in seconds (24 hours)
+            86400L,                    // Last link TTL in seconds (24 hours)
             false,                     // Clear last link on read
             false,                     // Redact all parameters in last link
             Collections.emptyList(),   // Redacted parameter keys
@@ -81,6 +85,7 @@ import ly.ulink.sdk.ULink;
 import ly.ulink.sdk.models.ULinkConfig;
 import android.app.Application;
 import android.util.Log;
+import java.util.Collections;
 
 public class MyApplication extends Application {
     @Override
@@ -93,7 +98,7 @@ public class MyApplication extends Application {
             true,                      // debug
             true,                      // enableDeepLinkIntegration
             true,                      // persistLastLinkData
-            86400,                     // lastLinkTimeToLiveSeconds
+            86400L,                    // lastLinkTimeToLiveSeconds
             false,                     // clearLastLinkOnRead
             false,                     // redactAllParametersInLastLink
             Collections.emptyList(),   // redactedParameterKeysInLastLink
@@ -130,6 +135,8 @@ import ly.ulink.sdk.listeners.OnLinkListener;
 import ly.ulink.sdk.listeners.OnUnifiedLinkListener;
 import ly.ulink.sdk.listeners.OnReinstallListener;
 import ly.ulink.sdk.listeners.OnLogListener;
+import kotlinx.serialization.json.JsonElement;
+import kotlinx.serialization.json.JsonObject;
 
 public class MainActivity extends AppCompatActivity {
     private ULink ulink;
@@ -146,7 +153,9 @@ public class MainActivity extends AppCompatActivity {
             Log.d("ULink", "Dynamic link received: " + data.getSlug());
             // Handle deep link data
             String slug = data.getSlug();
-            Map<String, String> params = data.getParameters();
+            // parameters is a kotlinx.serialization JsonElement; for link parameters
+            // it is a JsonObject, which implements Map<String, JsonElement>
+            JsonElement params = data.getParameters();
             // Navigate to appropriate screen
         });
 
@@ -169,6 +178,23 @@ public class MainActivity extends AppCompatActivity {
             // Forward to your logging system
         });
     }
+}
+```
+
+### Manual deep link handling
+
+If you handle intents yourself, first set `enableDeepLinkIntegration` to `false` (4th constructor
+argument). With automatic integration on, the SDK already processes `ACTION_VIEW` intents on resume
+and manual calls are not deduplicated, so every link would be emitted twice. `handleDeepLink` has no
+`@JvmOverloads`, so Java must pass all three arguments:
+
+```java
+ULinkConfig config = new ULinkConfig("your-api-key", "https://api.ulink.ly", false, false);
+
+// In your activity, for the launch intent and in onNewIntent:
+Uri uri = intent.getData();
+if (uri != null) {
+    ulink.handleDeepLink(uri, false, null); // uri, isDeferred, matchType
 }
 ```
 
@@ -199,15 +225,18 @@ public void createDynamicLink() {
         "https://example.com/image.png"   // ogImage
     );
 
-    // Create dynamic link parameters
+    // Create dynamic link parameters. Positional order (@JvmOverloads):
+    // domain, slug, name, iosFallbackUrl, androidFallbackUrl, fallbackUrl,
+    // parameters, socialMediaTags, metadata, externalId
     ULinkParameters linkParams = ULinkParameters.dynamic(
         "links.shared.ly",              // domain
         "user-profile-12345",           // slug (optional)
-        "https://apps.apple.com/...",   // iOS fallback
-        "https://play.google.com/...",  // Android fallback
-        "https://example.com",          // fallback URL
+        null,                           // name (optional)
+        "https://apps.apple.com/...",   // iosFallbackUrl
+        "https://play.google.com/...",  // androidFallbackUrl
+        "https://example.com",          // fallbackUrl
         params,                         // parameters
-        socialTags,                     // social media tags
+        socialTags,                     // socialMediaTags
         null                            // metadata
     );
 
@@ -239,12 +268,13 @@ public void createDynamicLinkWithCallback() {
     params.put("screen", "profile");
 
     ULinkParameters linkParams = ULinkParameters.dynamic(
-        "links.shared.ly",
-        "user-profile-12345",
-        null, null,
-        "https://example.com",
-        params,
-        null, null
+        "links.shared.ly",       // domain
+        "user-profile-12345",    // slug
+        null,                    // name
+        null,                    // iosFallbackUrl
+        null,                    // androidFallbackUrl
+        "https://example.com",   // fallbackUrl
+        params                   // parameters
     );
 
     // Create link using callbacks
@@ -271,15 +301,16 @@ Unified links are simple platform-based redirects intended for browser handling.
 
 ```java
 public void createUnifiedLink() {
+    // Positional order (@JvmOverloads): domain, slug, name, iosUrl, androidUrl,
+    // fallbackUrl, parameters, socialMediaTags, metadata, externalId.
+    // iosUrl, androidUrl and fallbackUrl are required (non-null).
     ULinkParameters linkParams = ULinkParameters.unified(
         "links.shared.ly",                    // domain
         "download-app",                       // slug (optional)
-        "https://apps.apple.com/your-app",    // iOS URL
-        "https://play.google.com/your-app",   // Android URL
-        "https://example.com",                // fallback URL
-        null,                                 // parameters
-        null,                                 // social media tags
-        null                                  // metadata
+        null,                                 // name (optional)
+        "https://apps.apple.com/your-app",    // iosUrl
+        "https://play.google.com/your-app",   // androidUrl
+        "https://example.com"                 // fallbackUrl
     );
 
     // Using CompletableFuture
@@ -415,7 +446,7 @@ ULinkConfig config = new ULinkConfig(
     "your-api-key",
     "https://api.ulink.ly",
     true,  // debug = true
-    true, true, 86400, false, false,
+    true, true, 86400L, false, false,
     Collections.emptyList(), true
 );
 
@@ -452,6 +483,10 @@ import androidx.appcompat.app.AppCompatActivity;
 import ly.ulink.sdk.ULink;
 import ly.ulink.sdk.models.ULinkConfig;
 import ly.ulink.sdk.models.ULinkParameters;
+import kotlinx.serialization.json.JsonElement;
+import kotlinx.serialization.json.JsonObject;
+import kotlinx.serialization.json.JsonPrimitive;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -467,7 +502,7 @@ public class MyApplication extends Application {
             true,                      // debug
             true,                      // enableDeepLinkIntegration
             true,                      // persistLastLinkData
-            86400,                     // lastLinkTimeToLiveSeconds
+            86400L,                    // lastLinkTimeToLiveSeconds
             false,                     // clearLastLinkOnRead
             false,                     // redactAllParametersInLastLink
             Collections.emptyList(),   // redactedParameterKeysInLastLink
@@ -509,13 +544,18 @@ public class MainActivity extends AppCompatActivity {
         // Listen for deep links
         ulink.setOnLinkListener(data -> {
             Log.d("ULink", "Deep link: " + data.getSlug());
-            Map<String, String> params = data.getParameters();
+            // parameters is a kotlinx.serialization JsonElement; for link parameters
+            // it is a JsonObject, which implements Map<String, JsonElement>
+            JsonElement raw = data.getParameters();
 
             // Navigate based on parameters
-            if (params != null) {
-                String screen = params.get("screen");
-                String userId = params.get("userId");
-                // Navigate to appropriate screen
+            if (raw instanceof JsonObject) {
+                JsonObject params = (JsonObject) raw;
+                JsonElement screen = params.get("screen");
+                if (screen instanceof JsonPrimitive) {
+                    String screenName = ((JsonPrimitive) screen).getContent();
+                    // Navigate to appropriate screen
+                }
             }
         });
 
@@ -532,12 +572,13 @@ public class MainActivity extends AppCompatActivity {
         params.put("referralCode", "ABC123");
 
         ULinkParameters linkParams = ULinkParameters.dynamic(
-            "links.shared.ly",
-            null,  // Auto-generate slug
-            null, null,
-            "https://example.com",
-            params,
-            null, null
+            "links.shared.ly",       // domain
+            null,                    // slug (auto-generated)
+            null,                    // name
+            null,                    // iosFallbackUrl
+            null,                    // androidFallbackUrl
+            "https://example.com",   // fallbackUrl
+            params                   // parameters
         );
 
         // Create link with CompletableFuture

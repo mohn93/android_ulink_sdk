@@ -69,49 +69,6 @@ class ULink private constructor(
         @Volatile
         private var INSTANCE: ULink? = null
         
-        /**
-         * Initialize the ULink SDK
-         * 
-         * This method initializes the ULink SDK and performs the following actions:
-         * 1. Creates a singleton instance with the provided configuration
-         * 2. Retrieves or generates a unique installation ID
-         * 3. Tracks the installation with the server
-         * 4. Starts a new session
-         * 5. Registers lifecycle observer for automatic session management
-         * 
-         * It should be called when your app starts, typically in your Application class
-         * or in your main Activity's onCreate method.
-         * 
-         * Example:
-         * ```kotlin
-         * class MyApplication : Application() {
-         *     override fun onCreate() {
-         *         super.onCreate()
-         *         ULink.initialize(
-         *             context = this,
-         *             config = ULinkConfig(
-         *                 apiKey = "your_api_key",
-         *                 baseUrl = "https://api.ulink.ly",
-         *                 debug = true
-         *             )
-         *         )
-         *     }
-         * }
-         * ```
-         */
-        /**
-         * Initialize the ULink SDK
-         * 
-         * This method is now suspend and will await bootstrap completion.
-         * It throws ULinkInitializationError if essential operations fail.
-         * Thread-safe with double-checked locking to prevent duplicate initialization.
-         * 
-         * @param context The application context
-         * @param config The SDK configuration
-         * @param httpClient Optional HTTP client for testing
-         * @return The initialized ULink instance
-         * @throws ULinkInitializationError if initialization fails
-         */
         // Suspend-safe lock for initialize(). A JVM monitor (synchronized) cannot
         // be held across a suspension point — the coroutine could resume on a
         // different thread and unlock would throw IllegalMonitorStateException.
@@ -119,6 +76,45 @@ class ULink private constructor(
         // serialize without parking any thread.
         private val initMutex = Mutex()
 
+        /**
+         * Initialize the ULink SDK.
+         *
+         * Creates the singleton instance, retrieves or generates the installation ID,
+         * checks in with the server (bootstrap: installation tracking, session start,
+         * reinstall detection) and registers the lifecycle observers used for automatic
+         * session management and deep link integration.
+         *
+         * This is a `suspend` function: it awaits bootstrap completion and throws
+         * [ULinkInitializationError] if essential operations fail. Thread-safe; concurrent
+         * calls are serialized and reuse the same instance. Call it once when your app
+         * starts, typically from your Application class, without blocking the UI on it.
+         * From Java, use [initializeAsync] or the callback overload of `initialize`.
+         *
+         * Example:
+         * ```kotlin
+         * class MyApplication : Application() {
+         *     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+         *
+         *     override fun onCreate() {
+         *         super.onCreate()
+         *         appScope.launch {
+         *             runCatching {
+         *                 ULink.initialize(
+         *                     context = this@MyApplication,
+         *                     config = ULinkConfig(apiKey = "your_api_key", debug = true)
+         *                 )
+         *             }.onFailure { Log.w("ULink", "Initialization failed: ${it.message}") }
+         *         }
+         *     }
+         * }
+         * ```
+         *
+         * @param context The application context
+         * @param config The SDK configuration
+         * @param httpClient Optional HTTP client for testing
+         * @return The initialized ULink instance
+         * @throws ULinkInitializationError if initialization fails
+         */
         @JvmStatic
         suspend fun initialize(
             context: Context,
@@ -180,13 +176,16 @@ class ULink private constructor(
          *
          * Example usage in Java:
          * ```java
+         * // ULinkConfig uses @JvmOverloads, so Java arguments are positional in
+         * // declaration order: apiKey, baseUrl, debug, enableDeepLinkIntegration,
+         * // persistLastLinkData, lastLinkTimeToLiveSeconds, clearLastLinkOnRead,
+         * // redactAllParametersInLastLink, redactedParameterKeysInLastLink,
+         * // autoCheckDeferredLink. Omitted trailing arguments keep their defaults.
          * ULinkConfig config = new ULinkConfig(
          *     "your-api-key",
-         *     "https://api.ulink.ly",
-         *     true,  // debug
-         *     true,  // enableDeepLinkIntegration
-         *     true,  // autoCheckDeferredLink
-         *     false  // persistLastLinkData
+         *     "https://api.ulink.ly", // baseUrl (the default; required positionally)
+         *     true,                   // debug
+         *     true                    // enableDeepLinkIntegration
          * );
          *
          * ULink.initializeAsync(context, config)
@@ -235,13 +234,16 @@ class ULink private constructor(
          *
          * Example usage in Java:
          * ```java
+         * // ULinkConfig uses @JvmOverloads, so Java arguments are positional in
+         * // declaration order: apiKey, baseUrl, debug, enableDeepLinkIntegration,
+         * // persistLastLinkData, lastLinkTimeToLiveSeconds, clearLastLinkOnRead,
+         * // redactAllParametersInLastLink, redactedParameterKeysInLastLink,
+         * // autoCheckDeferredLink. Omitted trailing arguments keep their defaults.
          * ULinkConfig config = new ULinkConfig(
          *     "your-api-key",
-         *     "https://api.ulink.ly",
-         *     true,  // debug
-         *     true,  // enableDeepLinkIntegration
-         *     true,  // autoCheckDeferredLink
-         *     false  // persistLastLinkData
+         *     "https://api.ulink.ly", // baseUrl (the default; required positionally)
+         *     true,                   // debug
+         *     true                    // enableDeepLinkIntegration
          * );
          *
          * ULink.initialize(context, config,
@@ -259,7 +261,7 @@ class ULink private constructor(
          * @param config SDK configuration
          * @param onSuccess Callback invoked on main thread when initialization succeeds
          * @param onError Optional callback invoked on main thread when initialization fails.
-         *                If null and an error occurs, the exception is re-thrown.
+         *                If null and an error occurs, the error is logged, not re-thrown.
          * @see initializeAsync
          * @see initialize
          */
@@ -1535,7 +1537,20 @@ class ULink private constructor(
     }
     
     /**
-     * Handles incoming deep links
+     * Resolves a deep link URI and emits the result to [dynamicLinkStream] /
+     * [unifiedLinkStream] (and the matching listeners).
+     *
+     * Only call this manually when automatic integration is disabled
+     * (`enableDeepLinkIntegration = false`). With automatic integration enabled, the SDK
+     * already handles `ACTION_VIEW` intents in `onActivityResumed`, and manual calls are
+     * not deduplicated against it, so the same link would be processed and emitted twice.
+     *
+     * This method has no `@JvmOverloads`; from Java pass all three arguments,
+     * e.g. `ulink.handleDeepLink(uri, false, null)`.
+     *
+     * @param uri The deep link URI
+     * @param isDeferred Whether the link came from deferred deep linking (default: false)
+     * @param matchType The deferred match type, if any (default: null)
      */
     fun handleDeepLink(uri: Uri, isDeferred: Boolean = false, matchType: String? = null) {
         if (config.debug) {
@@ -1596,7 +1611,8 @@ class ULink private constructor(
     }
     
     /**
-     * Sets the initial deep link URI
+     * Sets the initial deep link URI, later returned by [getInitialUri] and resolved by
+     * [getInitialDeepLink]. The SDK never sets this itself.
      */
     fun setInitialUri(uri: Uri?) {
         initialUri = uri
@@ -1606,7 +1622,10 @@ class ULink private constructor(
     }
     
     /**
-     * Gets the initial deep link URI
+     * Gets the initial deep link URI.
+     *
+     * Returns null unless the app previously called [setInitialUri]; the SDK does not
+     * capture the launch intent here on its own.
      */
     fun getInitialUri(): Uri? {
         return initialUri
@@ -1665,7 +1684,10 @@ class ULink private constructor(
     }
     
     /**
-     * Gets the initial deep link as resolved data
+     * Resolves the initial deep link URI set via [setInitialUri].
+     *
+     * Returns null unless the app previously called [setInitialUri] (the SDK does not set
+     * it on its own), or if the URI cannot be resolved.
      */
     suspend fun getInitialDeepLink(): ULinkResolvedData? {
         return initialUri?.let { uri ->
@@ -2339,11 +2361,15 @@ class ULink private constructor(
      *
      * Example usage in Java:
      * ```java
+     * // Positional order: domain, slug, name, iosFallbackUrl, androidFallbackUrl,
+     * // fallbackUrl, parameters, socialMediaTags, metadata, externalId
      * ULinkParameters params = ULinkParameters.dynamic(
-     *     "links.shared.ly",
-     *     "my-slug",
-     *     null, null, "https://example.com",
-     *     null, null, null
+     *     "links.shared.ly",      // domain
+     *     "my-slug",              // slug
+     *     null,                   // name
+     *     null,                   // iosFallbackUrl
+     *     null,                   // androidFallbackUrl
+     *     "https://example.com"   // fallbackUrl
      * );
      *
      * ulink.createLink(params,
