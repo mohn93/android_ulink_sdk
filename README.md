@@ -150,6 +150,8 @@ import ly.ulink.sdk.ULink
 import ly.ulink.sdk.models.ULinkConfig
 
 class MyApplication : Application() {
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     override fun onCreate() {
         super.onCreate()
 
@@ -159,7 +161,11 @@ class MyApplication : Application() {
             enableDeepLinkIntegration = true // Automatic deep link handling
         )
 
-        ULink.initialize(this, config)
+        // initialize() is a suspend function: launch it, do not block on it
+        appScope.launch {
+            runCatching { ULink.initialize(this@MyApplication, config) }
+                .onFailure { Log.w("ULink", "Initialization failed: ${it.message}") }
+        }
     }
 }
 ```
@@ -243,7 +249,8 @@ Your own code is a different matter — `onCreate` does run again on rotation, w
 you read the link there you will handle it twice. That is a real problem and worth guarding. Keep the
 guard in your own state though (a handled flag, a `SavedStateHandle` entry, a ViewModel), rather than
 mutating `activity.intent`, which is shared with every other library that reads it. If you would rather
-consume the intent, use Option B below and call `ulink.handleDeepLink(uri)` yourself.
+consume the intent, use Option B below: set `enableDeepLinkIntegration = false` and call
+`ulink.handleDeepLink(uri)` yourself.
 
 **Emission contract:** every link open emits, including the same URL repeatedly. The SDK dedupes only
 re-delivery of a single intent — resuming from the launcher or recents does not re-emit the last link —
@@ -334,7 +341,22 @@ public class MainActivity extends AppCompatActivity {
 
 #### Option B: Manual Deep Link Handling
 
-If you prefer manual control or need backward compatibility:
+If you prefer manual control or need backward compatibility.
+
+**Disable automatic integration first.** With `enableDeepLinkIntegration = true` the SDK already
+handles every `ACTION_VIEW` intent when the activity resumes, and manual `handleDeepLink` calls are not
+deduplicated against that, so each link would be processed and emitted twice.
+
+```kotlin
+// In your Application class
+val config = ULinkConfig(
+    apiKey = "your_api_key",
+    enableDeepLinkIntegration = false // Required for manual handling
+)
+appScope.launch {
+    runCatching { ULink.initialize(this@MyApplication, config) }
+}
+```
 
 ```kotlin
 class MainActivity : AppCompatActivity() {
@@ -344,16 +366,13 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Initialize with manual handling
-        val config = ULinkConfig(
-            apiKey = "your_api_key",
-            enableDeepLinkIntegration = false // Disable automatic handling
-        )
-        ulink = ULink.initialize(this, config)
-
-        // Handle initial intent
-        handleIntent(intent)
+        ulink = ULink.getInstance()
         observeDeepLinks()
+
+        // Handle the launch intent (only on first creation, not on rotation)
+        if (savedInstanceState == null) {
+            handleIntent(intent)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -382,16 +401,26 @@ class MainActivity : AppCompatActivity() {
 }
 ```
 
+From Java, `handleDeepLink` has no `@JvmOverloads`, so pass all three arguments:
+
+```java
+Uri uri = intent.getData();
+if (uri != null) {
+    ulink.handleDeepLink(uri, false, null); // uri, isDeferred, matchType
+}
+```
+
 ### 3. Create Dynamic Links
 
 **Kotlin:**
 
 ```kotlin
 // Create a dynamic link
-val parameters = ULinkParameters.createDynamicLink(
+val parameters = ULinkParameters.dynamic(
+    domain = "links.shared.ly",
     slug = "my-product",
-    iosUrl = "https://apps.apple.com/app/myapp",
-    androidUrl = "https://play.google.com/store/apps/details?id=com.myapp",
+    iosFallbackUrl = "https://apps.apple.com/app/myapp",
+    androidFallbackUrl = "https://play.google.com/store/apps/details?id=com.myapp",
     fallbackUrl = "https://mywebsite.com/product",
     parameters = mapOf(
         "productId" to "12345",
@@ -431,15 +460,18 @@ SocialMediaTags socialTags = new SocialMediaTags(
     "https://mywebsite.com/product-image.jpg"
 );
 
+// Positional order (Java): domain, slug, name, iosFallbackUrl, androidFallbackUrl,
+// fallbackUrl, parameters, socialMediaTags, metadata, externalId
 ULinkParameters parameters = ULinkParameters.dynamic(
-    "links.shared.ly",              // domain
-    "my-product",                   // slug
-    "https://apps.apple.com/...",   // iOS fallback
-    "https://play.google.com/...",  // Android fallback
-    "https://mywebsite.com/product", // fallback URL
-    params,                         // parameters
-    socialTags,                     // social media tags
-    null                            // metadata
+    "links.shared.ly",               // domain
+    "my-product",                    // slug
+    null,                            // name
+    "https://apps.apple.com/...",    // iosFallbackUrl
+    "https://play.google.com/...",   // androidFallbackUrl
+    "https://mywebsite.com/product", // fallbackUrl
+    params,                          // parameters
+    socialTags,                      // socialMediaTags
+    null                             // metadata
 );
 
 ulink.createLinkAsync(parameters)
@@ -461,7 +493,8 @@ ulink.createLinkAsync(parameters)
 
 ```kotlin
 // Create a unified link
-val parameters = ULinkParameters.createUnifiedLink(
+val parameters = ULinkParameters.unified(
+    domain = "links.shared.ly",
     slug = "my-content",
     iosUrl = "myapp://content/123",
     androidUrl = "myapp://content/123",
@@ -553,7 +586,7 @@ lifecycleScope.launch {
 // Check session state
 val hasActiveSession = ulink.hasActiveSession()
 val currentSessionId = ulink.getCurrentSessionId()
-val sessionState = ulink.getSessionState() // INITIALIZING, ACTIVE, ENDED, ERROR
+val sessionState = ulink.getSessionState() // IDLE, INITIALIZING, ACTIVE, ENDING, FAILED
 val isInitializing = ulink.isSessionInitializing()
 ```
 
@@ -575,7 +608,7 @@ ulink.endSessionAsync()
 
 ### 7. Deferred Deep Links
 
-Deferred deep links are checked automatically on first launch when `autoCheckDeferredLink = true`. For manual control:
+Deferred deep linking requires a paid Ulinkly plan. Deferred deep links are checked automatically on first launch when `autoCheckDeferredLink = true`. For manual control:
 
 ```kotlin
 // Manually check for deferred deep links
@@ -637,7 +670,7 @@ The main class for interacting with the ULink SDK.
 
 | Method | Description |
 |--------|-------------|
-| `initialize(context, config)` | Initialize the SDK (Kotlin) |
+| `initialize(context, config)` | Initialize the SDK (Kotlin, suspend; not callable from Java) |
 | `initializeAsync(context, config)` | Initialize the SDK (Java CompletableFuture) |
 | `initialize(context, config, onSuccess, onError)` | Initialize with callbacks (Java) |
 | `getInstance()` | Get the singleton instance |
@@ -652,7 +685,7 @@ The main class for interacting with the ULink SDK.
 | `resolveLink(url): ULinkResponse` | Resolve a ULink URL (suspend) |
 | `resolveLinkAsync(url)` | Resolve link (CompletableFuture) |
 | `resolveLink(url, onSuccess, onError)` | Resolve link with callbacks |
-| `handleDeepLink(uri, isDeferred, matchType)` | Manually handle a deep link URI |
+| `handleDeepLink(uri, isDeferred, matchType)` | Manually handle a deep link URI. Only with `enableDeepLinkIntegration = false`, otherwise links are processed twice. Java must pass all 3 arguments |
 | `processULinkUri(uri): ULinkResolvedData?` | Process URI without emitting to streams |
 | `checkDeferredLink()` | Manually check for deferred deep links |
 
@@ -660,8 +693,8 @@ The main class for interacting with the ULink SDK.
 
 | Method | Description |
 |--------|-------------|
-| `getInitialDeepLink(): ULinkResolvedData?` | Get the initial deep link that opened the app |
-| `getInitialUri(): Uri?` | Get the raw initial URI |
+| `getInitialDeepLink(): ULinkResolvedData?` | Resolve the URI passed to `setInitialUri` (suspend). Returns null unless the app called `setInitialUri` |
+| `getInitialUri(): Uri?` | Get the URI passed to `setInitialUri`. Returns null unless the app called `setInitialUri` |
 | `getLastLinkData(): ULinkResolvedData?` | Get the last received link data |
 | `setInitialUri(uri)` | Set the initial URI manually |
 
@@ -683,7 +716,7 @@ The main class for interacting with the ULink SDK.
 | `endSession(onSuccess, onError)` | End session with callbacks |
 | `hasActiveSession(): Boolean` | Check if there's an active session |
 | `getCurrentSessionId(): String?` | Get the current session ID |
-| `getSessionState(): SessionState` | Get session state (INITIALIZING, ACTIVE, ENDED, ERROR) |
+| `getSessionState(): SessionState` | Get session state (IDLE, INITIALIZING, ACTIVE, ENDING, FAILED) |
 | `isSessionInitializing(): Boolean` | Check if session is initializing |
 
 #### Listeners (Java-friendly)
@@ -736,16 +769,34 @@ data class ULinkConfig(
 
 #### ULinkParameters
 
+Build instances with the factory methods (both `@JvmStatic @JvmOverloads`, so Java arguments are
+positional in this order):
+
 ```kotlin
-data class ULinkParameters(
-    val type: ULinkType,
-    val slug: String,
-    val iosUrl: String? = null,
-    val androidUrl: String? = null,
-    val fallbackUrl: String? = null,
-    val parameters: Map<String, Any>? = null,
-    val socialMediaTags: SocialMediaTags? = null,
-    val metadata: Map<String, Any>? = null
+ULinkParameters.dynamic(
+    domain: String,
+    slug: String? = null,
+    name: String? = null,
+    iosFallbackUrl: String? = null,
+    androidFallbackUrl: String? = null,
+    fallbackUrl: String? = null,
+    parameters: Map<String, Any>? = null,
+    socialMediaTags: SocialMediaTags? = null,
+    metadata: Map<String, Any>? = null,
+    externalId: String? = null
+)
+
+ULinkParameters.unified(
+    domain: String,
+    slug: String? = null,
+    name: String? = null,
+    iosUrl: String,
+    androidUrl: String,
+    fallbackUrl: String,
+    parameters: Map<String, Any>? = null,
+    socialMediaTags: SocialMediaTags? = null,
+    metadata: Map<String, Any>? = null,
+    externalId: String? = null
 )
 ```
 
@@ -756,7 +807,7 @@ data class ULinkResponse(
     val success: Boolean,
     val url: String? = null,
     val error: String? = null,
-    val data: Map<String, Any>? = null
+    val data: JsonObject? = null
 )
 ```
 
@@ -765,14 +816,16 @@ data class ULinkResponse(
 ```kotlin
 data class ULinkResolvedData(
     val slug: String? = null,
-    val iosUrl: String? = null,
-    val androidUrl: String? = null,
+    val iosFallbackUrl: String? = null,
+    val androidFallbackUrl: String? = null,
     val fallbackUrl: String? = null,
-    val parameters: Map<String, Any>? = null,
+    val parameters: JsonElement? = null,
     val socialMediaTags: SocialMediaTags? = null,
-    val metadata: Map<String, Any>? = null,
-    val type: ULinkType? = null,
-    val rawData: Map<String, Any>? = null
+    val metadata: JsonElement? = null,
+    val type: String? = null, // "dynamic" or "unified"
+    val isDeferred: Boolean = false,
+    val matchType: String? = null,
+    val rawData: JsonObject? = null
 )
 ```
 
@@ -803,10 +856,11 @@ data class ULinkLogEntry(
 
 ```kotlin
 enum class SessionState {
+    IDLE,
     INITIALIZING,
     ACTIVE,
-    ENDED,
-    ERROR
+    ENDING,
+    FAILED
 }
 ```
 
@@ -814,11 +868,15 @@ enum class SessionState {
 
 ### Custom Deep Link Handling
 
+`processULinkUri` resolves a URI without emitting to the streams. If automatic integration is still
+enabled, the SDK will also handle the same intent on resume and emit it, so set
+`enableDeepLinkIntegration = false` when you handle links this way.
+
 ```kotlin
 // Handle deep links manually
-override fun onNewIntent(intent: Intent?) {
+override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
-    intent?.data?.let { uri ->
+    intent.data?.let { uri ->
         lifecycleScope.launch {
             val resolvedData = ulink.processULinkUri(uri)
             resolvedData?.let {
@@ -871,9 +929,13 @@ val config = ULinkConfig(
 
 ## Requirements
 
-- Android API level 24 (Android 7.0) or higher
+- Android API level 24 (Android 7.0) or higher (`minSdk 24`)
 - Kotlin 1.9.24 or higher
 - AndroidX libraries
+- For verified Android App Links, add your app's SHA-256 signing certificate fingerprint in the
+  Ulinkly dashboard in colon-separated form (`AB:CD:EF:...`), as printed by `keytool -list -v` or
+  `./gradlew signingReport`
+- Deferred deep linking requires a paid Ulinkly plan
 
 ## Dependencies
 

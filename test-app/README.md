@@ -25,14 +25,19 @@ The test app includes the following functionality:
 
 ## Setup
 
-1. **Configure API Key**: Update the API key in `MainActivity.kt`:
+1. **Configure API Key**: Update the API key in `MainActivity.kt` (and `TestApp.kt`):
    ```kotlin
    private fun initializeULink() {
        val config = ULinkConfig(
            apiKey = "your-api-key-here", // Replace with your actual API key
            debug = true
        )
-       ulink = ULink(this, config)
+       ULink.initialize(this, config, { instance ->
+           ulink = instance
+           observeDeepLinks()
+       }, { error ->
+           Log.e(TAG, "ULink SDK init failed", error)
+       })
    }
    ```
 
