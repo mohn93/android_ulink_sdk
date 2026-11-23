@@ -47,7 +47,7 @@ Add the dependency to your app's build file:
 
 ```kotlin
 dependencies {
-    implementation("ly.ulink:ulink-sdk:1.2.4")
+    implementation("ly.ulink:ulink-sdk:1.2.5")
 }
 ```
 
@@ -55,7 +55,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'ly.ulink:ulink-sdk:1.2.4'
+    implementation 'ly.ulink:ulink-sdk:1.2.5'
 }
 ```
 
@@ -94,7 +94,7 @@ For local development or testing unreleased versions:
 
 ```kotlin
 dependencies {
-    implementation("ly.ulink:ulink-sdk:1.2.4")
+    implementation("ly.ulink:ulink-sdk:1.2.5")
 }
 ```
 
